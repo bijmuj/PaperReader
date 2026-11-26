@@ -41,6 +41,8 @@ img { max-width: 100% !important; height: auto !important; }
 figure { margin: 1.3em 0 !important; }
 figure img { border-radius: 3px; }
 figure.equation { margin: 0.8em 0 !important; overflow-x: auto; }
+/* Wide tables and equations scroll sideways without flipping the chapter. */
+.scroll-x, figure.equation { overscroll-behavior-x: contain; }
 figcaption { line-height: 1.45; }
 a { -webkit-tap-highlight-color: rgba(90, 130, 220, 0.25); }
 a.noteref { text-decoration: none; }

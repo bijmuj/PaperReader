@@ -34,7 +34,18 @@ class Anchor:
     id: str
 
 
-Inline = Run | Anchor
+@dataclass
+class Markup:
+    """Ready-made inline XHTML (e.g. MathML) from a structured source.
+
+    Internal links inside it are written as href="#<id>"; the EPUB writer
+    points them at the right chapter file.
+    """
+
+    xhtml: str
+
+
+Inline = Run | Anchor | Markup
 
 
 @dataclass
@@ -69,7 +80,14 @@ class Visual:
     width_em: float = 0.0
 
 
-Element = Heading | Paragraph | Visual
+@dataclass
+class Block:
+    """A ready-made XHTML block (paragraph, table, equation, figure, list)."""
+
+    xhtml: str
+
+
+Element = Heading | Paragraph | Visual | Block
 
 
 @dataclass
@@ -82,4 +100,20 @@ class Document:
 
 
 def plain_text(content: list[Inline]) -> str:
-    return "".join(r.text for r in content if isinstance(r, Run))
+    out = []
+    for r in content:
+        if isinstance(r, Run):
+            out.append(r.text)
+        elif isinstance(r, Markup):
+            out.append(markup_text(r.xhtml))
+    return "".join(out)
+
+
+def markup_text(xhtml: str) -> str:
+    """Visible text of an XHTML fragment (TeX annotations dropped)."""
+    import html
+    import re
+
+    s = re.sub(r"<annotation\b.*?</annotation>", "", xhtml, flags=re.S)
+    s = re.sub(r"<[^>]+>", "", s)
+    return re.sub(r"\s+", " ", html.unescape(s))

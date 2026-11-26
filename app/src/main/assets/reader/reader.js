@@ -212,7 +212,7 @@
       var target = document.getElementById(id);
       if (!target) return;
       var fig = target.closest('figure');
-      if (fig && bridge) {
+      if (fig && bridge && fig.querySelector('img')) {
         var img = fig.querySelector('img');
         var cap = fig.querySelector('figcaption');
         bridge.onFigureRef(fig.id || id, img ? img.src : '', cap ? textOf(cap) : '');

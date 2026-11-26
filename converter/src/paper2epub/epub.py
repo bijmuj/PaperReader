@@ -8,7 +8,7 @@ import re
 import uuid
 import zipfile
 
-from .model import Anchor, Document, Heading, Paragraph, Run, Visual, plain_text
+from .model import Anchor, Block, Document, Heading, Markup, Paragraph, Run, Visual, plain_text
 
 _XML_BAD = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f￾￿]")
 
@@ -28,6 +28,40 @@ figcaption { font-size: 0.85em; text-align: left; margin-top: 0.4em; }
 a { color: inherit; text-decoration-color: #888; }
 a.noteref { text-decoration: none; color: #2a6ad3; }
 code { font-family: monospace; }
+/* Markup from LaTeXML (arXiv HTML). */
+.ltx_font_bold { font-weight: bold; }
+.ltx_font_italic, .ltx_emph { font-style: italic; }
+.ltx_font_typewriter { font-family: monospace; }
+.ltx_font_smallcaps { font-variant: small-caps; }
+.ltx_font_sansserif { font-family: sans-serif; }
+.ltx_align_left { text-align: left; }
+.ltx_align_center { text-align: center; }
+.ltx_align_right { text-align: right; }
+.scroll-x { overflow-x: auto; max-width: 100%; }
+cite { font-style: normal; }
+figure.table .scroll-x { margin-top: 0.4em; }
+table.ltx_tabular { border-collapse: collapse; margin: 0 auto; font-size: 0.8em; line-height: 1.3; }
+.ltx_tabular td, .ltx_tabular th { padding: 0.15em 0.45em; white-space: nowrap; }
+.ltx_border_t { border-top: 1px solid; }
+.ltx_border_b { border-bottom: 1px solid; }
+.ltx_border_tt { border-top: 2px solid; }
+.ltx_border_bb { border-bottom: 2px solid; }
+.ltx_border_l { border-left: 1px solid; }
+.ltx_border_r { border-right: 1px solid; }
+table.ltx_equation, table.ltx_equationgroup { width: 100%; border-collapse: collapse; margin: 0.5em 0; }
+td.ltx_eqn_cell { padding: 0; }
+td.ltx_eqn_eqno { text-align: right; white-space: nowrap; font-size: 0.9em; padding-left: 0.6em; }
+td.ltx_eqn_center_padleft, td.ltx_eqn_center_padright { width: 50%; }
+.ltx_flex_figure { display: flex; flex-wrap: wrap; justify-content: center; align-items: flex-end; gap: 0.6em; }
+.ltx_flex_cell { flex: 1 1 40%; }
+.ltx_flex_break { flex-basis: 100%; height: 0; }
+.ltx_listing { font-family: monospace; font-size: 0.75em; overflow-x: auto; text-align: left; }
+.ltx_listingline { white-space: pre; }
+ul.ltx_itemize, ol.ltx_enumerate { padding-left: 1.4em; }
+li.ltx_item { list-style: none; }
+li.ltx_item > .ltx_tag { float: left; margin-left: -1.3em; }
+b.runin { margin-right: 0.3em; }
+div.ltx_theorem, div.ltx_proof { margin: 0.6em 0; }
 """
 
 
@@ -40,6 +74,7 @@ class _Writer:
         self.doc = doc
         self.chapters: list[list] = []
         self.id_file: dict[str, str] = {}
+        self.has_math: list[bool] = []
 
     # -- chaptering -------------------------------------------------------
 
@@ -76,6 +111,9 @@ class _Writer:
             if isinstance(x, Anchor):
                 out.append(f'<span id="{_esc(x.id)}"></span>')
                 continue
+            if isinstance(x, Markup):
+                out.append(self.markup(x.xhtml))
+                continue
             text = _esc(x.text)
             if x.mono:
                 text = f"<code>{text}</code>"
@@ -95,6 +133,16 @@ class _Writer:
             out.append(text)
         return _merge_adjacent_links("".join(out))
 
+    def markup(self, xhtml: str) -> str:
+        """Points href="#id" links in ready-made XHTML at the chapter holding the id."""
+
+        def fix(m: re.Match) -> str:
+            target = html.unescape(m.group(1))
+            fname = self.id_file.get(target)
+            return f'href="{_esc(fname)}#{_esc(target)}"' if fname else 'data-missing-target=""'
+
+        return _HREF_LOCAL.sub(fix, xhtml)
+
     # -- blocks ---------------------------------------------------------------
 
     def element(self, e) -> str:
@@ -104,6 +152,8 @@ class _Writer:
         if isinstance(e, Paragraph):
             cls = f' class="{e.role}"' if e.role != "body" else ""
             return f"<p{cls}>{self.inlines(e.content)}</p>"
+        if isinstance(e, Block):
+            return self.markup(e.xhtml)
         if isinstance(e, Visual):
             x0, y0, x1, y1 = e.clip
             cap = f"<figcaption>{self.inlines(e.caption)}</figcaption>" if e.caption else ""
@@ -178,10 +228,11 @@ class _Writer:
         ]
         spine = []
         for i in range(len(self.chapters)):
-            items.append(f'<item id="ch{i}" href="{self.chapter_file(i)}" media-type="application/xhtml+xml"/>')
+            props = ' properties="mathml"' if self.has_math[i] else ""
+            items.append(f'<item id="ch{i}" href="{self.chapter_file(i)}" media-type="application/xhtml+xml"{props}/>')
             spine.append(f'<itemref idref="ch{i}"/>')
         for n, name in enumerate(sorted(self.doc.images)):
-            mt = "image/png" if name.endswith(".png") else "image/jpeg"
+            mt = {"png": "image/png", "gif": "image/gif", "svg": "image/svg+xml"}.get(name.rsplit(".", 1)[-1], "image/jpeg")
             items.append(f'<item id="img{n}" href="images/{_esc(name)}" media-type="{mt}"/>')
         creators = "".join(f"<dc:creator>{_esc(a)}</dc:creator>" for a in self.doc.authors)
         return (
@@ -214,12 +265,22 @@ def _image_size(data: bytes) -> tuple[int, int] | None:
     return None
 
 
+_ID_ATTR = re.compile(r'\sid="([^"]+)"')
+_HREF_LOCAL = re.compile(r'href="#([^"]+)"')
+
+
 def _ids(e) -> list[str]:
+    if isinstance(e, Block):
+        return [html.unescape(i) for i in _ID_ATTR.findall(e.xhtml)]
     ids = []
     if isinstance(e, (Heading, Visual)):
         ids.append(e.id)
     content = e.caption if isinstance(e, Visual) else e.content
-    ids.extend(x.id for x in content if isinstance(x, Anchor))
+    for x in content:
+        if isinstance(x, Anchor):
+            ids.append(x.id)
+        elif isinstance(x, Markup):
+            ids.extend(html.unescape(i) for i in _ID_ATTR.findall(x.xhtml))
     return ids
 
 
@@ -239,6 +300,7 @@ def write_epub(doc: Document, path: str) -> dict:
     w.split()
     ident = str(uuid.uuid4())
     chapters = [w.chapter(i, ch) for i, ch in enumerate(w.chapters)]
+    w.has_math = ["<math" in c for c in chapters]
     with zipfile.ZipFile(path, "w") as z:
         z.writestr(zipfile.ZipInfo("mimetype"), "application/epub+zip", compress_type=zipfile.ZIP_STORED)
         z.writestr(
@@ -255,10 +317,5 @@ def write_epub(doc: Document, path: str) -> dict:
             z.writestr(f"OEBPS/{w.chapter_file(i)}", text, compress_type=zipfile.ZIP_DEFLATED)
         for name, data in doc.images.items():
             z.writestr(f"OEBPS/images/{name}", data, compress_type=zipfile.ZIP_STORED)
-    links = sum(
-        1
-        for e in doc.elements
-        for x in (e.caption if isinstance(e, Visual) else e.content)
-        if isinstance(x, Run) and x.link and x.link.startswith("#")
-    )
+    links = sum(c.count('href="ch') for c in chapters)
     return {"chapters": len(chapters), "images": len(doc.images), "internal_link_runs": links}

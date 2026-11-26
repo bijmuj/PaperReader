@@ -50,7 +50,7 @@ window.PaperReader = new Proxy({}, { get: (_, name) => (...args) => window.calls
   results.noteref = calls.filter(c => c[0] === 'onNoteref').map(c => [c[1], c[2].slice(0, 60)]);
 
   calls.length = 0;
-  const figLink = links.find(a => /-(fig|tab)-/.test(a.getAttribute('href')));
+  const figLink = links.find(a => /-(fig|tab)-|\.F\d+$/.test(a.getAttribute('href')));
   figLink?.click();
   results.figureRef = calls.filter(c => c[0] === 'onFigureRef').map(c => [c[1], c[2].split('/').pop(), c[3].slice(0, 40)]);
 
