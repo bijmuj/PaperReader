@@ -1,0 +1,6 @@
+html, body { background: #141414 !important; color: #dcdcdc !important; }
+a { color: #9fc1ff !important; }
+/* Equations and tables are black-on-white renders: invert them cleanly. */
+figure.equation img, figure.table img { filter: invert(0.88) hue-rotate(180deg); }
+/* Keep figure colours true (plots), just take the glare off. */
+figure.figure img { filter: brightness(0.88); }

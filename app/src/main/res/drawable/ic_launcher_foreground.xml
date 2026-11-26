@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A page with text lines and a folded corner, centred in the 108dp adaptive canvas. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M36,30h26l10,10v38h-36z" />
+    <path
+        android:fillColor="#C9D6EA"
+        android:pathData="M62,30v10h10z" />
+    <path
+        android:fillColor="#2F4B7C"
+        android:pathData="M41,46h26v3h-26zM41,53h26v3h-26zM41,60h26v3h-26zM41,67h16v3h-16z" />
+</vector>

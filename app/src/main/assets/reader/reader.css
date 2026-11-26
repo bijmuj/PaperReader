@@ -1,0 +1,63 @@
+/* Book shell: every chapter is a full-screen column; swipe sideways between them. */
+html, body {
+  height: 100%;
+  margin: 0 !important;
+  padding: 0 !important;
+  overflow: hidden !important;
+  -webkit-text-size-adjust: none;
+}
+body {
+  font-family: serif;
+  font-size: 17px;
+  line-height: 1.6;
+  overflow-wrap: break-word;
+}
+#pr-strip {
+  display: flex;
+  height: 100%;
+  width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scroll-snap-type: x mandatory;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+}
+#pr-strip::-webkit-scrollbar { display: none; }
+.pr-chapter {
+  flex: 0 0 100%;
+  width: 100%;
+  height: 100%;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  scroll-snap-align: start;
+  scroll-snap-stop: always;
+  box-sizing: border-box;
+}
+.pr-page { padding: 14px 18px 24px; }
+.pr-loading { padding: 40vh 0 0; text-align: center; opacity: 0.6; font-family: sans-serif; }
+
+img { max-width: 100% !important; height: auto !important; }
+figure { margin: 1.3em 0 !important; }
+figure img { border-radius: 3px; }
+figure.equation { margin: 0.8em 0 !important; overflow-x: auto; }
+figcaption { line-height: 1.45; }
+a { -webkit-tap-highlight-color: rgba(90, 130, 220, 0.25); }
+a.noteref { text-decoration: none; }
+
+.pr-flash { animation: pr-flash 2s ease-out; border-radius: 3px; }
+@keyframes pr-flash {
+  from { background-color: rgba(255, 196, 0, 0.45); }
+  to { background-color: transparent; }
+}
+
+.pr-next {
+  margin: 2.5em 0 0.5em;
+  padding: 0.8em 1em;
+  border-radius: 10px;
+  background: rgba(128, 128, 128, 0.14);
+  font-family: sans-serif;
+  font-size: 0.85em;
+  text-align: right;
+}
+.pr-next small { display: block; opacity: 0.65; }

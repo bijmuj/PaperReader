@@ -1,0 +1,4 @@
+html, body { background: #f4ecd8 !important; color: #3d3020 !important; }
+a.noteref { color: #8a4b12 !important; }
+/* Let white figure backgrounds pick up the page colour. */
+figure img { mix-blend-mode: multiply; }

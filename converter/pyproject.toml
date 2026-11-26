@@ -1,0 +1,18 @@
+[project]
+name = "paper2epub"
+version = "0.1.0"
+description = "Convert research paper PDFs into reflowable EPUBs"
+authors = [
+    { name = "Bijin Nhuchhe Pradhan", email = "bijinpradhan@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "pymupdf>=2.2",
+]
+
+[build-system]
+requires = ["uv_build>=0.13.7,<0.14.0"]
+build-backend = "uv_build"
+
+[project.scripts]
+paper2epub = "paper2epub.cli:main"
