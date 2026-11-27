@@ -49,6 +49,7 @@ class Library(private val context: Context, private val dao: BookDao) {
     suspend fun delete(book: Book) = withContext(Dispatchers.IO) {
         dao.delete(book.id)
         dao.deleteProgress(book.id)
+        dao.deleteHighlights(book.id)
         folder(book).deleteRecursively()
     }
 

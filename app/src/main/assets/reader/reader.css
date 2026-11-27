@@ -63,3 +63,12 @@ a.noteref { text-decoration: none; }
   text-align: right;
 }
 .pr-next small { display: block; opacity: 0.65; }
+
+/* Highlights: translucent so they work on every theme. */
+mark.pr-hl { color: inherit; background: none; border-radius: 2px; padding: 0.05em 0; }
+mark.pr-hl-yellow { background: rgba(255, 205, 0, 0.42); }
+mark.pr-hl-green { background: rgba(70, 200, 90, 0.36); }
+mark.pr-hl-blue { background: rgba(70, 145, 255, 0.36); }
+mark.pr-hl-pink { background: rgba(255, 80, 150, 0.34); }
+mark.pr-hl-block { display: inline-block; width: max-content; padding: 0.15em 0.4em; border-radius: 6px; }
+mark.pr-hl-note { text-decoration: underline dotted; text-decoration-thickness: 2px; text-underline-offset: 0.2em; }

@@ -84,7 +84,68 @@ window.PaperReader = new Proxy({}, { get: (_, name) => (...args) => window.calls
   sections[1].scrollTop = 200; sections[1].dispatchEvent(new Event('scroll')); await wait(700);
   results.progressCalls = calls.filter(c => c[0] === 'onProgress').map(c => [c[1], +c[2].toFixed(2)]);
 
-  document.title = 'RESULT:' + JSON.stringify(results);
+  // Highlights: a selection across inline markup -> capture, apply, remove, relocate, lose.
+  {
+    const visible = (el) => { const c = el.cloneNode(true); c.querySelectorAll('annotation, annotation-xml').forEach(a => a.remove()); return c.textContent; };
+    const paras = sections.flatMap(s => [...s.querySelectorAll('p')]).filter(p => p.textContent.length > 300);
+    const p = paras.find(p => p.querySelector('math') && p.querySelector('a')) || paras.find(p => p.querySelector('a')) || paras[0];
+    const sec = p.closest('.pr-chapter');
+    const texts = [];
+    const tw = document.createTreeWalker(p, NodeFilter.SHOW_TEXT);
+    for (let n; (n = tw.nextNode());) if (!n.parentElement.closest('annotation, annotation-xml, math') && n.data.trim().length > 3) texts.push(n);
+    const r = document.createRange();
+    r.setStart(texts[0], 2);
+    r.setEnd(texts[texts.length - 1], texts[texts.length - 1].length - 2);
+    getSelection().removeAllRanges();
+    getSelection().addRange(r);
+    const sel = prTakeSelection();
+    const before = sec.innerHTML;
+    const beforeText = sec.textContent;
+    results.hlSelection = sel && { chapter: sel.chapter, len: sel.end - sel.start, quote: sel.quote.slice(0, 50) + '…', hasMath: !!p.querySelector('math') };
+    results.hlSelectionCleared = getSelection().isCollapsed;
+    Object.assign(sel, { id: 9001, color: 'green', note: true });
+    results.hlApplied = prAddHighlight(sel);
+    const marks = [...document.querySelectorAll('mark[data-hl="9001"]')];
+    results.hlMarks = marks.length;
+    results.hlTextUnchanged = sec.textContent === beforeText;
+    const marked = marks.map(visible).join('');
+    results.hlCoversQuote = marked.replace(/\s+/g, '').includes(sel.quote.replace(/\s+/g, '').slice(5, -5));
+    prUpdateHighlight(9001, 'pink', false);
+    results.hlRecolored = marks.every(m => m.className === 'pr-hl pr-hl-pink');
+    prRemoveHighlight(9001);
+    results.hlRemovedCleanly = !document.querySelector('mark[data-hl="9001"]') && sec.innerHTML === before;
+    const moved = Object.assign({}, sel, { id: 9002, start: sel.start + 9, end: sel.end + 9 });
+    results.hlRelocated = prAddHighlight(moved) && document.querySelectorAll('mark[data-hl="9002"]').length > 0;
+    results.hlShow = prShowHighlight(9002);
+    prRemoveHighlight(9002);
+    results.hlLostDetected = prAddHighlight(Object.assign({}, sel, { id: 9003, quote: 'zzqq not in this text qqzz' })) === false;
+    calls.length = 0;
+    prAddHighlight(Object.assign({}, sel, { id: 9004 }));
+    document.querySelector('mark[data-hl="9004"]').click();
+    results.hlTap = calls.filter(c => c[0] === 'onHighlight');
+  }
+
+  // Long-press on one symbol of a display equation: the highlight takes the whole formula.
+  {
+    const math = document.querySelector('math[display="block"]');
+    if (math) {
+      const glyph = [...math.querySelectorAll('mi, mo, mn')].find(e => e.textContent.trim());
+      const r = document.createRange();
+      r.selectNodeContents(glyph);
+      getSelection().removeAllRanges();
+      getSelection().addRange(r);
+      const sel = prTakeSelection();
+      const visible = (el) => { const c = el.cloneNode(true); c.querySelectorAll('annotation, annotation-xml').forEach(a => a.remove()); return c.textContent; };
+      results.mathSnapQuoteIsWholeFormula = !!sel && sel.quote.replace(/\s+/g, '') === visible(math).replace(/\s+/g, '');
+      Object.assign(sel, { id: 9100, color: 'yellow', note: false });
+      prAddHighlight(sel);
+      const m = document.querySelector('mark[data-hl="9100"]');
+      results.mathSnapBoxed = !!m && m.contains(math) && m.classList.contains('pr-hl-block');
+      prRemoveHighlight(9100);
+    }
+  }
+
+    document.title = 'RESULT:' + JSON.stringify(results);
 })();
 </script>
 """

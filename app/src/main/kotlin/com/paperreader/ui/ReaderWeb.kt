@@ -6,6 +6,11 @@ import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import android.graphics.Rect
+import android.view.ActionMode
+import android.view.Menu
+import android.view.MenuItem
+import android.view.View
 import android.view.ViewGroup
 import android.webkit.ConsoleMessage
 import android.webkit.JavascriptInterface
@@ -110,6 +115,65 @@ class ReaderBridge(private val vm: ReaderViewModel) {
     fun onImage(src: String) {
         main.post { vm.popup = Popup.Image(src) }
     }
+
+    @JavascriptInterface
+    fun onHighlight(id: Long) {
+        main.post { vm.popup = Popup.Highlight(id) }
+    }
+
+    @JavascriptInterface
+    fun onLostHighlights(idsJson: String) {
+        val ids = runCatching {
+            val a = org.json.JSONArray(idsJson)
+            (0 until a.length()).map { a.getLong(it) }.toSet()
+        }.getOrDefault(emptySet())
+        main.post { vm.lostHighlights = ids }
+    }
+}
+
+/** Actions added to the text-selection menu. */
+enum class SelectionAction(val label: String) { HIGHLIGHT("Highlight"), NOTE("Note") }
+
+/** WebView whose text-selection menu also offers [SelectionAction]s. */
+@SuppressLint("ViewConstructor")
+class ReaderWebView(context: Context) : WebView(context) {
+    var onSelectionAction: (SelectionAction) -> Unit = {}
+
+    override fun startActionMode(callback: ActionMode.Callback, type: Int): ActionMode? =
+        super.startActionMode(wrap(callback), type)
+
+    override fun startActionMode(callback: ActionMode.Callback): ActionMode? =
+        super.startActionMode(wrap(callback))
+
+    private fun wrap(inner: ActionMode.Callback): ActionMode.Callback = object : ActionMode.Callback2() {
+        override fun onCreateActionMode(mode: ActionMode, menu: Menu): Boolean {
+            val created = inner.onCreateActionMode(mode, menu)
+            SelectionAction.entries.forEachIndexed { i, a ->
+                menu.add(Menu.NONE, MENU_BASE + i, i, a.label).setShowAsAction(MenuItem.SHOW_AS_ACTION_IF_ROOM)
+            }
+            return created
+        }
+
+        override fun onPrepareActionMode(mode: ActionMode, menu: Menu) = inner.onPrepareActionMode(mode, menu)
+
+        override fun onActionItemClicked(mode: ActionMode, item: MenuItem): Boolean {
+            val action = SelectionAction.entries.getOrNull(item.itemId - MENU_BASE)
+                ?: return inner.onActionItemClicked(mode, item)
+            onSelectionAction(action)
+            mode.finish()
+            return true
+        }
+
+        override fun onDestroyActionMode(mode: ActionMode) = inner.onDestroyActionMode(mode)
+
+        override fun onGetContentRect(mode: ActionMode, view: View, outRect: Rect) {
+            if (inner is ActionMode.Callback2) inner.onGetContentRect(mode, view, outRect) else super.onGetContentRect(mode, view, outRect)
+        }
+    }
+
+    private companion object {
+        const val MENU_BASE = 0x5052 // "PR"
+    }
 }
 
 @SuppressLint("SetJavaScriptEnabled")
@@ -119,13 +183,13 @@ fun createReaderWebView(
     vm: ReaderViewModel,
     shell: () -> String,
     openExternal: (Uri) -> Unit,
-): WebView {
+): ReaderWebView {
     val loader = WebViewAssetLoader.Builder()
         .setDomain(ASSET_HOST)
         .addPathHandler("/assets/", WebViewAssetLoader.AssetsPathHandler(context))
         .addPathHandler("/books/", BookPathHandler(booksDir, shell))
         .build()
-    return WebView(context).apply {
+    return ReaderWebView(context).apply {
         // Without explicit MATCH_PARENT the WebView sizes its viewport to the content,
         // and the reader's full-height chapter columns (height: 100%) collapse to 0.
         layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)

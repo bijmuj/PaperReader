@@ -9,6 +9,9 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.paperreader.PaperReaderApp
 import com.paperreader.data.Book
+import com.paperreader.data.Highlight
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import com.paperreader.data.Progress
 import com.paperreader.epub.EpubBook
 import kotlinx.coroutines.Dispatchers
@@ -31,7 +34,11 @@ sealed interface Popup {
     data class Note(val target: String, val text: String) : Popup
     data class Figure(val target: String, val src: String, val caption: String) : Popup
     data class Image(val src: String) : Popup
+    /** A highlight's sheet; [editNote] focuses the note field (the "Note" selection action). */
+    data class Highlight(val id: Long, val editNote: Boolean = false) : Popup
 }
+
+val HIGHLIGHT_COLORS = listOf("yellow", "green", "blue", "pink")
 
 class ReaderViewModel(private val app: PaperReaderApp, private val bookId: Long) : ViewModel() {
     var book by mutableStateOf<Book?>(null)
@@ -45,6 +52,16 @@ class ReaderViewModel(private val app: PaperReaderApp, private val bookId: Long)
     var chapter by mutableIntStateOf(0)
         private set
     var popup by mutableStateOf<Popup?>(null)
+
+    private val _highlights = MutableStateFlow<List<Highlight>>(emptyList())
+    /** This book's highlights, oldest first. Read by the request handler thread too. */
+    val highlights: StateFlow<List<Highlight>> = _highlights
+
+    /** Highlights whose text could not be found in the book any more. */
+    var lostHighlights by mutableStateOf<Set<Long>>(emptySet())
+
+    /** Colour for new highlights: the last one picked. */
+    private var lastColor = HIGHLIGHT_COLORS[0]
 
     /** Scroll fraction per chapter href. Read by the request handler thread. */
     private val fractions = ConcurrentHashMap<String, Float>()
@@ -68,8 +85,63 @@ class ReaderViewModel(private val app: PaperReaderApp, private val bookId: Long)
             chapter = e.spine.indexOf(saved.href).coerceAtLeast(0)
         }
         dao.touch(bookId, System.currentTimeMillis())
+        _highlights.value = dao.highlights(bookId)
+        _highlights.value.lastOrNull()?.let { lastColor = it.color }
         book = b
         epub = e
+        viewModelScope.launch { dao.observeHighlights(bookId).collect { _highlights.value = it } }
+    }
+
+    fun highlight(id: Long): Highlight? = _highlights.value.firstOrNull { it.id == id }
+
+    /** The highlight as reader.js expects it. */
+    fun highlightJson(h: Highlight): String = JSONObject()
+        .put("id", h.id)
+        .put("chapter", epub?.spine?.indexOf(h.chapter) ?: -1)
+        .put("start", h.start)
+        .put("end", h.end)
+        .put("quote", h.quote)
+        .put("prefix", h.prefix)
+        .put("suffix", h.suffix)
+        .put("color", h.color)
+        .put("note", h.note.isNotBlank())
+        .toString()
+
+    /** Saves a highlight for a selection captured by reader.js (prTakeSelection). */
+    suspend fun addHighlight(selection: JSONObject): Highlight? {
+        val href = epub?.spine?.getOrNull(selection.optInt("chapter", -1)) ?: return null
+        val now = System.currentTimeMillis()
+        val h = Highlight(
+            bookId = bookId,
+            chapter = href,
+            start = selection.getInt("start"),
+            end = selection.getInt("end"),
+            quote = selection.getString("quote"),
+            prefix = selection.optString("prefix"),
+            suffix = selection.optString("suffix"),
+            color = lastColor,
+            createdAt = now,
+            updatedAt = now,
+        )
+        val id = app.db.books().insertHighlight(h)
+        return h.copy(id = id).also { _highlights.value = _highlights.value + it }
+    }
+
+    fun setHighlightColor(id: Long, color: String) {
+        lastColor = color
+        _highlights.value = _highlights.value.map { if (it.id == id) it.copy(color = color) else it }
+        viewModelScope.launch { app.db.books().setHighlightColor(id, color, System.currentTimeMillis()) }
+    }
+
+    fun setHighlightNote(id: Long, note: String) {
+        if (highlight(id)?.note == note) return
+        _highlights.value = _highlights.value.map { if (it.id == id) it.copy(note = note) else it }
+        viewModelScope.launch { app.db.books().setHighlightNote(id, note, System.currentTimeMillis()) }
+    }
+
+    fun deleteHighlight(id: Long) {
+        _highlights.value = _highlights.value.filter { it.id != id }
+        viewModelScope.launch { app.db.books().deleteHighlight(id) }
     }
 
     val shellUrl: String? get() = book?.let { "https://$ASSET_HOST/books/${it.folder}/$SHELL_PAGE" }
@@ -99,10 +171,13 @@ class ReaderViewModel(private val app: PaperReaderApp, private val bookId: Long)
             chapters.put(JSONObject().put("url", urlFor(b, href)).put("title", chapterTitle(i)))
             fractions[href]?.let { fr.put(i.toString(), it.toDouble()) }
         }
+        val hl = JSONArray()
+        _highlights.value.forEach { hl.put(JSONObject(highlightJson(it))) }
         return JSONObject()
             .put("chapters", chapters)
             .put("fractions", fr)
             .put("current", chapter)
+            .put("highlights", hl)
             .toString()
     }
 

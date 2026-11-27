@@ -66,6 +66,30 @@ import androidx.lifecycle.viewmodel.viewModelFactory
 import com.paperreader.PaperReaderApp
 import com.paperreader.data.ReaderTheme
 import com.paperreader.epub.EpubBook
+import com.paperreader.data.Highlight
+import android.content.ClipData
+import android.content.ClipboardManager
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.IntrinsicSize
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.PrimaryTabRow
+import androidx.compose.material3.Tab
+import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import org.json.JSONObject
 import kotlinx.coroutines.launch
 import java.util.concurrent.atomic.AtomicReference
 
@@ -159,14 +183,40 @@ fun ReaderScreen(bookId: Long, onClose: () -> Unit) {
         vm.urlFor(href)?.let { webView.evaluateJavascript("prGo(${jsString(it)})", null) }
     }
 
+    SideEffect {
+        webView.onSelectionAction = { action ->
+            webView.evaluateJavascript("prTakeSelection()") { result ->
+                val selection = runCatching { JSONObject(result) }.getOrNull() ?: return@evaluateJavascript
+                scope.launch {
+                    val h = vm.addHighlight(selection) ?: return@launch
+                    webView.evaluateJavascript("prAddHighlight(${vm.highlightJson(h)})", null)
+                    if (action == SelectionAction.NOTE) vm.popup = Popup.Highlight(h.id, editNote = true)
+                }
+            }
+        }
+    }
+    val highlights by vm.highlights.collectAsStateWithLifecycle()
+
     ModalNavigationDrawer(
         drawerState = drawerState,
         gesturesEnabled = drawerState.isOpen,
         drawerContent = {
-            TocDrawer(epub, epub.spine.getOrNull(vm.chapter), drawerState.isOpen) { href ->
-                go(href)
-                scope.launch { drawerState.close() }
-            }
+            ReaderDrawer(
+                epub = epub,
+                currentHref = epub.spine.getOrNull(vm.chapter),
+                isOpen = drawerState.isOpen,
+                highlights = highlights,
+                lost = vm.lostHighlights,
+                chapterTitle = { href -> vm.chapterTitle(epub.spine.indexOf(href)) },
+                onSelect = { href ->
+                    go(href)
+                    scope.launch { drawerState.close() }
+                },
+                onHighlight = { id ->
+                    webView.evaluateJavascript("prShowHighlight($id)", null)
+                    scope.launch { drawerState.close() }
+                },
+            )
         },
     ) {
         Scaffold(
@@ -220,18 +270,123 @@ fun ReaderScreen(bookId: Long, onClose: () -> Unit) {
 }
 
 @Composable
-private fun TocDrawer(epub: EpubBook, currentHref: String?, isOpen: Boolean, onSelect: (String) -> Unit) {
+private fun ReaderDrawer(
+    epub: EpubBook,
+    currentHref: String?,
+    isOpen: Boolean,
+    highlights: List<Highlight>,
+    lost: Set<Long>,
+    chapterTitle: (String) -> String,
+    onSelect: (String) -> Unit,
+    onHighlight: (Long) -> Unit,
+) {
+    var tab by rememberSaveable { mutableIntStateOf(0) }
+    ModalDrawerSheet {
+        PrimaryTabRow(selectedTabIndex = tab) {
+            Tab(selected = tab == 0, onClick = { tab = 0 }, text = { Text("Contents") })
+            Tab(selected = tab == 1, onClick = { tab = 1 }, text = {
+                Text(if (highlights.isEmpty()) "Highlights" else "Highlights (${highlights.size})")
+            })
+        }
+        if (tab == 0) {
+            TocList(epub, currentHref, isOpen, onSelect)
+        } else {
+            HighlightList(epub, highlights, lost, chapterTitle, onHighlight)
+        }
+    }
+}
+
+@Composable
+private fun HighlightList(
+    epub: EpubBook,
+    highlights: List<Highlight>,
+    lost: Set<Long>,
+    chapterTitle: (String) -> String,
+    onHighlight: (Long) -> Unit,
+) {
+    if (highlights.isEmpty()) {
+        Text(
+            "No highlights yet.\n\nSelect text with a long press, then choose Highlight or Note.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(28.dp),
+        )
+        return
+    }
+    // In reading order: by chapter, then position.
+    val sorted = remember(highlights) { highlights.sortedWith(compareBy({ epub.spine.indexOf(it.chapter) }, { it.start })) }
+    LazyColumn(Modifier.fillMaxSize()) {
+        itemsIndexed(sorted, key = { _, h -> h.id }) { i, h ->
+            if (i == 0 || sorted[i - 1].chapter != h.chapter) {
+                Text(
+                    chapterTitle(h.chapter),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(start = 28.dp, end = 16.dp, top = 16.dp, bottom = 4.dp),
+                )
+            }
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .clickable(enabled = h.id !in lost) { onHighlight(h.id) }
+                    .padding(horizontal = 20.dp, vertical = 8.dp)
+                    .height(IntrinsicSize.Min),
+            ) {
+                Box(
+                    Modifier
+                        .width(4.dp)
+                        .fillMaxHeight()
+                        .background(highlightSwatch(h.color), RoundedCornerShape(2.dp)),
+                )
+                Spacer(Modifier.width(12.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        h.quote.replace(Regex("\\s+"), " "),
+                        style = MaterialTheme.typography.bodyMedium,
+                        maxLines = 3,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    if (h.note.isNotBlank()) {
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            h.note,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 3,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    if (h.id in lost) {
+                        Text(
+                            "Not found in this version of the text",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+fun highlightSwatch(color: String) = when (color) {
+    "green" -> Color(0xFF46C85A)
+    "blue" -> Color(0xFF4691FF)
+    "pink" -> Color(0xFFFF5096)
+    else -> Color(0xFFFFCD00)
+}
+
+@Composable
+private fun TocList(epub: EpubBook, currentHref: String?, isOpen: Boolean, onSelect: (String) -> Unit) {
     val current = epub.toc.indexOfFirst { it.href.substringBefore('#') == currentHref }
     val listState = rememberLazyListState()
     LaunchedEffect(isOpen) {
         if (isOpen && current >= 0) listState.scrollToItem((current - 2).coerceAtLeast(0))
     }
-    ModalDrawerSheet {
-        Text(
-            "Contents",
-            style = MaterialTheme.typography.titleMedium,
-            modifier = Modifier.padding(horizontal = 28.dp, vertical = 20.dp),
-        )
+    Column {
+        Spacer(Modifier.height(8.dp))
         LazyColumn(state = listState) {
             itemsIndexed(epub.toc) { i, entry ->
                 NavigationDrawerItem(
@@ -317,5 +472,82 @@ private fun PopupLayer(vm: ReaderViewModel, webView: WebView) {
             }
         }
         is Popup.Image -> ImageViewer(file = vm.fileFor(p.src), onDismiss = dismiss)
+        is Popup.Highlight -> HighlightSheet(vm, webView, p)
     }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun HighlightSheet(vm: ReaderViewModel, webView: WebView, p: Popup.Highlight) {
+    val h = vm.highlight(p.id) ?: run {
+        vm.popup = null
+        return
+    }
+    val context = LocalContext.current
+    var note by remember(p.id) { mutableStateOf(h.note) }
+    val focus = remember { FocusRequester() }
+
+    fun sync(color: String, hasNote: Boolean) =
+        webView.evaluateJavascript("prUpdateHighlight(${h.id}, ${jsString(color)}, $hasNote)", null)
+
+    fun close() {
+        vm.setHighlightNote(h.id, note.trim())
+        sync(vm.highlight(h.id)?.color ?: h.color, note.isNotBlank())
+        vm.popup = null
+    }
+
+    ModalBottomSheet(onDismissRequest = ::close) {
+        Column(Modifier.padding(horizontal = 24.dp).padding(bottom = 24.dp).verticalScroll(rememberScrollState())) {
+            Row(Modifier.height(IntrinsicSize.Min)) {
+                Box(Modifier.width(4.dp).fillMaxHeight().background(highlightSwatch(h.color), RoundedCornerShape(2.dp)))
+                Spacer(Modifier.width(12.dp))
+                Text(
+                    h.quote.replace(Regex("\\s+"), " "),
+                    style = MaterialTheme.typography.bodyLarge,
+                    maxLines = 8,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            Spacer(Modifier.height(16.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.CenterVertically) {
+                HIGHLIGHT_COLORS.forEach { c ->
+                    val selected = c == h.color
+                    Box(
+                        Modifier
+                            .size(if (selected) 36.dp else 30.dp)
+                            .clip(CircleShape)
+                            .background(highlightSwatch(c))
+                            .then(if (selected) Modifier.border(3.dp, MaterialTheme.colorScheme.onSurface, CircleShape) else Modifier)
+                            .clickable {
+                                vm.setHighlightColor(h.id, c)
+                                sync(c, note.isNotBlank())
+                            }
+                            .semantics { contentDescription = "$c highlight" },
+                    )
+                }
+            }
+            Spacer(Modifier.height(16.dp))
+            OutlinedTextField(
+                value = note,
+                onValueChange = { note = it },
+                label = { Text("Note") },
+                minLines = 3,
+                modifier = Modifier.fillMaxWidth().focusRequester(focus),
+            )
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                TextButton(onClick = {
+                    vm.deleteHighlight(h.id)
+                    webView.evaluateJavascript("prRemoveHighlight(${h.id})", null)
+                    vm.popup = null
+                }) { Text("Delete") }
+                TextButton(onClick = {
+                    val text = h.quote.replace(Regex("\\s+"), " ") + if (note.isNotBlank()) "\n\n${note.trim()}" else ""
+                    context.getSystemService(ClipboardManager::class.java)
+                        ?.setPrimaryClip(ClipData.newPlainText("Highlight", text))
+                }) { Text("Copy") }
+                TextButton(onClick = ::close) { Text("Done") }
+            }
+        }
+    }
+    LaunchedEffect(p.id) { if (p.editNote) focus.requestFocus() }
 }

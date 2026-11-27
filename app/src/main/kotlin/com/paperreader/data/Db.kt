@@ -1,10 +1,12 @@
 package com.paperreader.data
 
 import android.content.Context
+import androidx.room.AutoMigration
 import androidx.room.ColumnInfo
 import androidx.room.Dao
 import androidx.room.Database
 import androidx.room.Entity
+import androidx.room.Index
 import androidx.room.Insert
 import androidx.room.PrimaryKey
 import androidx.room.Query
@@ -40,6 +42,29 @@ data class Progress(
     @ColumnInfo(defaultValue = "{}") val chapters: String = "{}",
 )
 
+/**
+ * A highlight (optionally with a note) in a book. It is anchored by character offsets into the
+ * visible text of its chapter, plus the quoted text and some context either side, so it can be
+ * found again if the text moves (for example in a re-converted EPUB).
+ */
+@Entity(tableName = "highlights", indices = [Index("bookId")])
+data class Highlight(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val bookId: Long,
+    /** Spine href of the chapter (book-relative, no fragment). */
+    val chapter: String,
+    val start: Int,
+    val end: Int,
+    val quote: String,
+    val prefix: String,
+    val suffix: String,
+    /** yellow | green | blue | pink */
+    val color: String,
+    val note: String = "",
+    val createdAt: Long,
+    val updatedAt: Long,
+)
+
 @Dao
 interface BookDao {
     @Query("SELECT * FROM books ORDER BY COALESCE(lastOpenedAt, addedAt) DESC")
@@ -65,9 +90,35 @@ interface BookDao {
 
     @Query("DELETE FROM progress WHERE bookId = :bookId")
     suspend fun deleteProgress(bookId: Long)
+
+    @Query("SELECT * FROM highlights WHERE bookId = :bookId ORDER BY createdAt")
+    fun observeHighlights(bookId: Long): Flow<List<Highlight>>
+
+    @Query("SELECT * FROM highlights WHERE bookId = :bookId ORDER BY createdAt")
+    suspend fun highlights(bookId: Long): List<Highlight>
+
+    @Insert
+    suspend fun insertHighlight(highlight: Highlight): Long
+
+    @Query("UPDATE highlights SET color = :color, updatedAt = :time WHERE id = :id")
+    suspend fun setHighlightColor(id: Long, color: String, time: Long)
+
+    @Query("UPDATE highlights SET note = :note, updatedAt = :time WHERE id = :id")
+    suspend fun setHighlightNote(id: Long, note: String, time: Long)
+
+    @Query("DELETE FROM highlights WHERE id = :id")
+    suspend fun deleteHighlight(id: Long)
+
+    @Query("DELETE FROM highlights WHERE bookId = :bookId")
+    suspend fun deleteHighlights(bookId: Long)
 }
 
-@Database(entities = [Book::class, Progress::class], version = 2, exportSchema = true)
+@Database(
+    entities = [Book::class, Progress::class, Highlight::class],
+    version = 3,
+    exportSchema = true,
+    autoMigrations = [AutoMigration(from = 2, to = 3)],
+)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun books(): BookDao
 

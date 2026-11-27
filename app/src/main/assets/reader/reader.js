@@ -226,6 +226,12 @@
       jumpTo(target, true);
       return;
     }
+    var mark = e.target.closest('mark.pr-hl');
+    if (mark && bridge && window.getSelection().isCollapsed) {
+      e.preventDefault();
+      bridge.onHighlight(+mark.dataset.hl);
+      return;
+    }
     var image = e.target.closest('img');
     if (image && bridge) {
       e.preventDefault();
@@ -233,10 +239,213 @@
     }
   });
 
+  // ---- highlights -----------------------------------------------------------
+  //
+  // A highlight is anchored by character offsets into the visible text of its chapter
+  // (MathML's TeX annotations and our own "next chapter" box excluded), plus the quoted
+  // text and some context so it can be found again if the text has moved.
+
+  var SKIP = 'annotation, annotation-xml, script, style, .pr-next';
+  var highlights = {};
+
+  function textIndex(section) {
+    var nodes = [];
+    var pos = 0;
+    var walker = document.createTreeWalker(section, NodeFilter.SHOW_TEXT, {
+      acceptNode: function (n) {
+        return n.parentElement && n.parentElement.closest(SKIP) ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT;
+      }
+    });
+    var n;
+    while ((n = walker.nextNode())) {
+      nodes.push({ node: n, start: pos });
+      pos += n.data.length;
+    }
+    return { nodes: nodes, length: pos, text: nodes.map(function (x) { return x.node.data; }).join('') };
+  }
+
+  function pointOffset(idx, container, offset) {
+    if (container.nodeType === 3) {
+      for (var i = 0; i < idx.nodes.length; i++) {
+        if (idx.nodes[i].node === container) return idx.nodes[i].start + offset;
+      }
+    }
+    var r = document.createRange();
+    r.setStart(container, offset);
+    r.collapse(true);
+    for (var j = 0; j < idx.nodes.length; j++) {
+      if (r.comparePoint(idx.nodes[j].node, 0) >= 0) return idx.nodes[j].start;
+    }
+    return idx.length;
+  }
+
+  function outerMath(node) {
+    var el = node.nodeType === 1 ? node : node.parentElement;
+    var math = el && el.closest('math');
+    while (math && math.parentElement && math.parentElement.closest('math')) math = math.parentElement.closest('math');
+    return math;
+  }
+
+  function chapterOfNode(node) {
+    var el = node.nodeType === 1 ? node : node.parentElement;
+    return el ? el.closest('.pr-chapter') : null;
+  }
+
+  function captureSelection() {
+    var sel = window.getSelection();
+    if (!sel || sel.isCollapsed || !sel.rangeCount) return null;
+    var range = sel.getRangeAt(0).cloneRange();
+    // Selections inside formulas are fiddly (each symbol is its own piece) and highlights cover
+    // whole formulas anyway, so a selection touching a formula takes in all of it.
+    var startMath = outerMath(range.startContainer);
+    var endMath = outerMath(range.endContainer);
+    if (startMath) range.setStartBefore(startMath);
+    if (endMath) range.setEndAfter(endMath);
+    var section = chapterOfNode(range.startContainer);
+    if (!section) return null;
+    var idx = textIndex(section);
+    var start = pointOffset(idx, range.startContainer, range.startOffset);
+    var end = chapterOfNode(range.endContainer) === section ? pointOffset(idx, range.endContainer, range.endOffset) : idx.length;
+    while (start < end && /\s/.test(idx.text.charAt(start))) start++;
+    while (end > start && /\s/.test(idx.text.charAt(end - 1))) end--;
+    if (end <= start) return null;
+    return {
+      chapter: +section.dataset.index,
+      start: start,
+      end: end,
+      quote: idx.text.slice(start, end),
+      prefix: idx.text.slice(Math.max(0, start - 40), start),
+      suffix: idx.text.slice(end, end + 40)
+    };
+  }
+
+  var lastSelection = null;
+  var selectionTimer = null;
+  document.addEventListener('selectionchange', function () {
+    clearTimeout(selectionTimer);
+    selectionTimer = setTimeout(function () {
+      var s = captureSelection();
+      if (s) lastSelection = s;
+    }, 60);
+  });
+
+  // Called by the app's "Highlight"/"Note" selection actions.
+  window.prTakeSelection = function () {
+    var s = captureSelection() || lastSelection;
+    lastSelection = null;
+    var sel = window.getSelection();
+    if (sel) sel.removeAllRanges();
+    return s;
+  };
+
+  // Where [h.quote] is now, preferring matching context and the old position; -1 if gone.
+  function relocate(text, h) {
+    var best = -1;
+    var bestScore = -Infinity;
+    for (var i = text.indexOf(h.quote); i >= 0; i = text.indexOf(h.quote, i + 1)) {
+      var score = 0;
+      var before = text.slice(Math.max(0, i - h.prefix.length), i);
+      var after = text.slice(i + h.quote.length, i + h.quote.length + h.suffix.length);
+      for (var a = 1; a <= Math.min(before.length, h.prefix.length) && before.charAt(before.length - a) === h.prefix.charAt(h.prefix.length - a); a++) score++;
+      for (var b = 0; b < Math.min(after.length, h.suffix.length) && after.charAt(b) === h.suffix.charAt(b); b++) score++;
+      score -= Math.abs(i - h.start) / 10000;
+      if (score > bestScore) {
+        bestScore = score;
+        best = i;
+      }
+    }
+    return best;
+  }
+
+  function markClass(h) {
+    return 'pr-hl pr-hl-' + h.color + (h.note ? ' pr-hl-note' : '');
+  }
+
+  function applyHighlight(h) {
+    var section = sections[h.chapter];
+    if (!section || !h.quote) return false;
+    var idx = textIndex(section);
+    var start = h.start;
+    var end = h.end;
+    if (idx.text.slice(start, end) !== h.quote) {
+      start = relocate(idx.text, h);
+      if (start < 0) return false;
+      end = start + h.quote.length;
+    }
+    var maths = [];
+    idx.nodes.forEach(function (n) {
+      var s = n.start;
+      var e = s + n.node.data.length;
+      if (e <= start || s >= end) return;
+      var node = n.node;
+      var math = node.parentElement && node.parentElement.closest('math');
+      if (math) { // marks can't go inside MathML: mark the whole formula
+        if (maths.indexOf(math) < 0) maths.push(math);
+        return;
+      }
+      if (!/\S/.test(node.data) && /^(table|tbody|thead|tfoot|tr|ul|ol|dl)$/i.test(node.parentNode.nodeName)) return;
+      var a = Math.max(start, s) - s;
+      var b = Math.min(end, e) - s;
+      if (b < node.data.length) node.splitText(b);
+      if (a > 0) node = node.splitText(a);
+      var mark = document.createElement('mark');
+      mark.className = markClass(h);
+      mark.dataset.hl = h.id;
+      node.parentNode.insertBefore(mark, node);
+      mark.appendChild(node);
+    });
+    maths.forEach(function (math) {
+      var mark = document.createElement('mark');
+      // Display equations are blocks: an inline mark would paint nothing behind them.
+      var block = math.getAttribute('display') === 'block' || getComputedStyle(math).display === 'block';
+      mark.className = markClass(h) + (block ? ' pr-hl-block' : '');
+      mark.dataset.hl = h.id;
+      math.parentNode.insertBefore(mark, math);
+      mark.appendChild(math);
+    });
+    highlights[h.id] = h;
+    return true;
+  }
+
+  function marksOf(id) {
+    return document.querySelectorAll('mark.pr-hl[data-hl="' + id + '"]');
+  }
+
+  window.prAddHighlight = function (h) { return applyHighlight(h); };
+
+  window.prUpdateHighlight = function (id, color, hasNote) {
+    var h = highlights[id];
+    if (h) {
+      h.color = color;
+      h.note = hasNote;
+    }
+    marksOf(id).forEach(function (m) {
+      m.className = markClass({ color: color, note: hasNote }) + (m.classList.contains('pr-hl-block') ? ' pr-hl-block' : '');
+    });
+  };
+
+  window.prRemoveHighlight = function (id) {
+    marksOf(id).forEach(function (m) {
+      var parent = m.parentNode;
+      while (m.firstChild) parent.insertBefore(m.firstChild, m);
+      parent.removeChild(m);
+      parent.normalize();
+    });
+    delete highlights[id];
+  };
+
+  window.prShowHighlight = function (id) {
+    var m = marksOf(id)[0];
+    if (m) jumpTo(m, true);
+    return !!m;
+  };
+
   // ---- start --------------------------------------------------------------
 
   loadAll().then(function (docs) {
     build(docs);
+    var lost = (cfg.highlights || []).filter(function (h) { return !applyHighlight(h); }).map(function (h) { return h.id; });
+    if (lost.length && bridge) bridge.onLostHighlights(JSON.stringify(lost));
     return imagesReady();
   }).then(function () {
     sections.forEach(function (s, i) {
