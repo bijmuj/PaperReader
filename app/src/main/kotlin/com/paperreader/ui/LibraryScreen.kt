@@ -45,16 +45,30 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.paperreader.PaperReaderApp
+import com.paperreader.convert.Arxiv
 import com.paperreader.data.Book
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun LibraryScreen(onOpen: (Long) -> Unit, importing: Boolean, onImport: (Uri) -> Unit, snackbar: SnackbarHostState) {
+fun LibraryScreen(
+    onOpen: (Long) -> Unit,
+    status: String?,
+    onImport: (Uri) -> Unit,
+    onArxiv: (String) -> Unit,
+    snackbar: SnackbarHostState,
+) {
     val app = LocalContext.current.applicationContext as PaperReaderApp
     val books by app.library.observe().collectAsStateWithLifecycle(initialValue = null)
     val scope = rememberCoroutineScope()
     var toDelete by remember { mutableStateOf<Book?>(null) }
+    var addMenu by remember { mutableStateOf(false) }
+    var arxivDialog by remember { mutableStateOf(false) }
 
     // Some file managers don't label .epub files, so accept anything and validate on import.
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -64,23 +78,47 @@ fun LibraryScreen(onOpen: (Long) -> Unit, importing: Boolean, onImport: (Uri) ->
     Scaffold(
         topBar = { TopAppBar(title = { Text("Papers") }) },
         floatingActionButton = {
-            ExtendedFloatingActionButton(
-                onClick = { picker.launch(arrayOf("application/epub+zip", "*/*")) },
-                icon = { Icon(Icons.Default.Add, null) },
-                text = { Text("Import EPUB") },
-            )
+            if (status == null) {
+                Box {
+                    ExtendedFloatingActionButton(
+                        onClick = { addMenu = true },
+                        icon = { Icon(Icons.Default.Add, null) },
+                        text = { Text("Add paper") },
+                    )
+                    DropdownMenu(expanded = addMenu, onDismissRequest = { addMenu = false }) {
+                        DropdownMenuItem(text = { Text("From arXiv…") }, onClick = {
+                            addMenu = false
+                            arxivDialog = true
+                        })
+                        DropdownMenuItem(text = { Text("EPUB file…") }, onClick = {
+                            addMenu = false
+                            picker.launch(arrayOf("application/epub+zip", "*/*"))
+                        })
+                    }
+                }
+            }
         },
         snackbarHost = { SnackbarHost(snackbar) },
     ) { padding ->
         Column(Modifier.padding(padding).fillMaxSize()) {
-            if (importing) LinearProgressIndicator(Modifier.fillMaxWidth())
+            if (status != null) {
+                LinearProgressIndicator(Modifier.fillMaxWidth())
+                Text(
+                    status,
+                    Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
             val list = books
             when {
                 list == null -> Unit
                 list.isEmpty() -> Box(Modifier.fillMaxSize().padding(32.dp), contentAlignment = Alignment.Center) {
                     Text(
-                        "No papers yet.\n\nConvert a PDF with paper2epub on your computer, then import the .epub here " +
-                            "or open it from your file manager.",
+                        "No papers yet.\n\nTap Add paper and paste an arXiv link, or share a link to Paper Reader " +
+                            "from your browser. EPUBs made with paper2epub can be imported too.",
                         textAlign = TextAlign.Center,
                         style = MaterialTheme.typography.bodyLarge,
                     )
@@ -93,6 +131,13 @@ fun LibraryScreen(onOpen: (Long) -> Unit, importing: Boolean, onImport: (Uri) ->
                 }
             }
         }
+    }
+
+    if (arxivDialog) {
+        ArxivDialog(onDismiss = { arxivDialog = false }, onConvert = {
+            arxivDialog = false
+            onArxiv(it)
+        })
     }
 
     toDelete?.let { book ->
@@ -109,6 +154,29 @@ fun LibraryScreen(onOpen: (Long) -> Unit, importing: Boolean, onImport: (Uri) ->
             dismissButton = { TextButton(onClick = { toDelete = null }) { Text("Cancel") } },
         )
     }
+}
+
+@Composable
+private fun ArxivDialog(onDismiss: () -> Unit, onConvert: (String) -> Unit) {
+    var text by remember { mutableStateOf("") }
+    val valid = Arxiv.parseId(text) != null || Arxiv.findId(text) != null
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Add from arXiv") },
+        text = {
+            OutlinedTextField(
+                value = text,
+                onValueChange = { text = it },
+                label = { Text("arXiv link or ID") },
+                placeholder = { Text("2604.14191") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Go),
+                keyboardActions = KeyboardActions(onGo = { if (valid) onConvert(text) }),
+            )
+        },
+        confirmButton = { TextButton(enabled = valid, onClick = { onConvert(text) }) { Text("Convert") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
 }
 
 @Composable

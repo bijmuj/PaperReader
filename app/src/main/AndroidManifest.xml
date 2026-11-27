@@ -1,6 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
+    <!-- Fetching papers from arXiv -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
     <application
         android:name=".PaperReaderApp"
         android:allowBackup="true"
@@ -24,6 +27,12 @@
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:scheme="content" />
                 <data android:mimeType="application/epub+zip" />
+            </intent-filter>
+            <!-- Share an arXiv link to Paper Reader to convert it -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
             </intent-filter>
         </activity>
     </application>

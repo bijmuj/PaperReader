@@ -23,7 +23,13 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import android.util.Log
 import com.paperreader.PaperReaderApp
+import com.paperreader.convert.Arxiv
+import com.paperreader.convert.convertArxiv
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import java.io.File
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import androidx.compose.runtime.rememberCoroutineScope
@@ -31,6 +37,9 @@ import androidx.compose.runtime.rememberCoroutineScope
 class MainActivity : ComponentActivity() {
     /** An EPUB handed to us by another app ("Open with"), waiting to be imported. */
     private val incoming = MutableStateFlow<Uri?>(null)
+
+    /** Text shared to us (an arXiv link), waiting to be converted. */
+    private val sharedText = MutableStateFlow<String?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -41,7 +50,7 @@ class MainActivity : ComponentActivity() {
         if (savedInstanceState == null) handleIntent(intent)
         setContent {
             PaperReaderTheme {
-                AppRoot(incoming)
+                AppRoot(incoming, sharedText)
             }
         }
     }
@@ -52,20 +61,25 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun handleIntent(intent: Intent?) {
-        if (intent?.action == Intent.ACTION_VIEW) intent.data?.let { incoming.value = it }
+        when (intent?.action) {
+            Intent.ACTION_VIEW -> intent.data?.let { incoming.value = it }
+            Intent.ACTION_SEND -> intent.getStringExtra(Intent.EXTRA_TEXT)?.let { sharedText.value = it }
+        }
     }
 }
 
 @Composable
-private fun AppRoot(incoming: MutableStateFlow<Uri?>) {
+private fun AppRoot(incoming: MutableStateFlow<Uri?>, sharedText: MutableStateFlow<String?>) {
     val app = LocalContext.current.applicationContext as PaperReaderApp
     var openBook by rememberSaveable { mutableStateOf<Long?>(null) }
-    var importing by remember { mutableStateOf(false) }
+    /** What the app is busy with (shown under the library's top bar), or null. */
+    var status by remember { mutableStateOf<String?>(null) }
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
 
     fun import(uri: Uri) {
-        importing = true
+        if (status != null) return
+        status = "Importing"
         scope.launch {
             try {
                 openBook = app.library.import(uri)
@@ -73,8 +87,43 @@ private fun AppRoot(incoming: MutableStateFlow<Uri?>) {
                 openBook = null
                 snackbar.showSnackbar(e.message ?: "Import failed")
             } finally {
-                importing = false
+                status = null
             }
+        }
+    }
+
+    fun fromArxiv(text: String) {
+        if (status != null) return
+        if (Arxiv.parseId(text) == null && Arxiv.findId(text) == null) {
+            scope.launch { snackbar.showSnackbar("That doesn't look like an arXiv link or ID") }
+            return
+        }
+        status = "Starting"
+        scope.launch {
+            val out = File(app.cacheDir, "converted/paper.epub")
+            try {
+                withContext(Dispatchers.IO) {
+                    out.parentFile?.mkdirs()
+                    convertArxiv(text, app.cacheDir, out) { line -> scope.launch { if (status != null) status = line } }
+                }
+                status = "Importing"
+                openBook = app.library.import(Uri.fromFile(out))
+            } catch (e: Exception) {
+                Log.e("PaperReader", "arXiv conversion failed", e)
+                snackbar.showSnackbar(e.message ?: "Conversion failed")
+            } finally {
+                out.delete()
+                status = null
+            }
+        }
+    }
+
+    val shared by sharedText.collectAsStateWithLifecycle()
+    LaunchedEffect(shared) {
+        shared?.let {
+            sharedText.value = null
+            openBook = null
+            fromArxiv(it)
         }
     }
 
@@ -90,7 +139,13 @@ private fun AppRoot(incoming: MutableStateFlow<Uri?>) {
     if (id != null) {
         ReaderScreen(bookId = id, onClose = { openBook = null })
     } else {
-        LibraryScreen(onOpen = { openBook = it }, importing = importing, onImport = ::import, snackbar = snackbar)
+        LibraryScreen(
+            onOpen = { openBook = it },
+            status = status,
+            onImport = ::import,
+            onArxiv = ::fromArxiv,
+            snackbar = snackbar,
+        )
     }
 }
 

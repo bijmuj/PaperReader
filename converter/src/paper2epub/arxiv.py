@@ -42,8 +42,11 @@ HTML_TAGS = {
     "sub", "sup", "table", "tbody", "td", "tfoot", "th", "thead", "tr", "u", "ul",
 }
 HTML_ATTRS = {"id", "class", "href", "src", "alt", "width", "height", "colspan", "rowspan", "role"}
-DROP_CLASSES = {"ltx_ERROR", "ltx_bib_cited", "ltx_rdf", "ltx_pagination", "ltx_role_newpage", "ltx_page_navbar"}
+DROP_CLASSES = {"ltx_ERROR", "ltx_pubnotes", "ltx_bib_cited", "ltx_rdf", "ltx_pagination", "ltx_role_newpage", "ltx_page_navbar"}
 UNWRAP_CLASSES = {"ltx_transformed_outer", "ltx_transformed_inner"}
+# LaTeXML writes tables in inline context (e.g. inside \resizebox) as spans with these classes.
+SPAN_TABLE = {"ltx_tabular": "table", "ltx_thead": "thead", "ltx_tbody": "tbody", "ltx_tfoot": "tfoot",
+              "ltx_tr": "tr", "ltx_td": "td"}
 SECTION_LEVELS = {
     "ltx_part": 1, "ltx_chapter": 1, "ltx_section": 1, "ltx_appendix": 1, "ltx_bibliography": 1,
     "ltx_index": 1, "ltx_subsection": 2, "ltx_subsubsection": 3,
@@ -297,6 +300,33 @@ def _local(tag) -> str:
     return tag.rsplit("}", 1)[-1] if isinstance(tag, str) else ""
 
 
+def _span_tables(el) -> None:
+    """Turns LaTeXML's span-built tables into real ones (with col/rowspans), and makes the
+    paragraphs/spans around them blocks so the XHTML stays sensible."""
+    tables = []
+    for node in el.iter("span", "div"):
+        cls = _classes(node)
+        kind = next((SPAN_TABLE[c] for c in cls if c in SPAN_TABLE), None)
+        if kind is None:
+            continue
+        node.tag = kind
+        if kind == "td":
+            for c in cls:
+                m = re.fullmatch(r"ltx_(col|row)span_(\d+)", c)
+                if m:
+                    node.set(f"{m.group(1)}span", m.group(2))
+        elif kind == "table":
+            tables.append(node)
+    for t in tables:
+        for a in t.iterancestors():
+            if a.tag in ("p", "span"):
+                a.tag = "div"
+            if a is el:
+                break
+    if tables and el.tag in ("p", "span"):
+        el.tag = "div"
+
+
 def _norm(s: str) -> str:
     return re.sub(r"[^a-z0-9]", "", s.lower())
 
@@ -362,6 +392,7 @@ class _Converter:
         for wrap in [e for e in el.iter() if _classes(e) & UNWRAP_CLASSES]:
             if wrap is not el:
                 wrap.drop_tag()
+        _span_tables(el)
         math_nodes = set()
         for m in el.iter("math"):
             math_nodes.update(m.iter())
@@ -494,7 +525,7 @@ class _Converter:
         wrapper.tag = "span"
         wrapper.attrib.clear()
         s = self.scrub(wrapper)
-        return re.sub(r"^<span>|</span>$", "", s) if s != "<span/>" else ""
+        return re.sub(r"^<(span|div)>|</(span|div)>$", "", s) if s not in ("<span/>", "<div/>") else ""
 
     # ---- structure ----
 
@@ -570,7 +601,8 @@ class _Converter:
             if self.runin:
                 body, self.runin = self.runin + body, None
             ident = f' id="{html.escape(el.get("id"))}"' if el.get("id") else ""
-            self.emit(f"<p{ident}>{body}</p>")
+            ptag = "div" if "<table" in body else "p"
+            self.emit(f"<{ptag}{ident}>{body}</{ptag}>")
             return
         if tag == "table" and cls & {"ltx_equation", "ltx_equationgroup", "ltx_eqn_table"}:
             self.emit(f'<div class="scroll-x">{self.scrub(el)}</div>')
@@ -633,7 +665,7 @@ def convert(arg: str) -> Document:
     title_el = next((e for e in article.iter() if "ltx_title_document" in _classes(e)), None)
     if title_el is not None:
         t = copy.deepcopy(title_el)
-        for n in t.xpath(".//*[contains(@class,'ltx_note')]"):
+        for n in t.xpath(".//*[contains(@class,'ltx_note') or contains(@class,'ltx_pubnotes')]"):
             n.drop_tree()
         title = _text(t)
     else:
