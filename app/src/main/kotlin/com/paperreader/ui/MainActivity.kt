@@ -102,7 +102,7 @@ private fun AppRoot(incoming: MutableStateFlow<Uri?>, sharedText: MutableStateFl
                         convertPdf(pdf, out, name) { line -> scope.launch { if (status != null) status = line } }
                     }
                     status = "Importing"
-                    openBook = app.library.import(Uri.fromFile(out))
+                    openBook = app.library.import(Uri.fromFile(out), original = pdf)
                 } else {
                     status = "Importing"
                     openBook = app.library.import(uri)

@@ -107,13 +107,13 @@ class ReaderBridge(private val vm: ReaderViewModel) {
     }
 
     @JavascriptInterface
-    fun onFigureRef(target: String, src: String, caption: String) {
-        main.post { vm.popup = Popup.Figure(target, src, caption) }
+    fun onFigureRef(target: String, src: String, caption: String, pdfPage: Int, pdfClip: String) {
+        main.post { vm.popup = Popup.Figure(target, src, caption, pdfPage, pdfClip) }
     }
 
     @JavascriptInterface
-    fun onImage(src: String) {
-        main.post { vm.popup = Popup.Image(src) }
+    fun onImage(src: String, pdfPage: Int, pdfClip: String) {
+        main.post { vm.popup = Popup.Image(src, pdfPage, pdfClip) }
     }
 
     @JavascriptInterface

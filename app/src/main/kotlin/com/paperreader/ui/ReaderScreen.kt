@@ -1,5 +1,16 @@
 package com.paperreader.ui
 
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.TextFieldDefaults
+import androidx.compose.material3.TextField
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Search
 import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.webkit.WebView
@@ -30,6 +41,7 @@ import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.ModalDrawerSheet
@@ -167,6 +179,34 @@ fun ReaderScreen(bookId: Long, onClose: () -> Unit) {
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     var showSettings by remember { mutableStateOf(false) }
+    var searching by rememberSaveable { mutableStateOf(false) }
+    var query by rememberSaveable { mutableStateOf("") }
+    /** (matches, current index, more than shown), or null before the first search. */
+    var found by remember { mutableStateOf<Triple<Int, Int, Boolean>?>(null) }
+    var menu by remember { mutableStateOf(false) }
+
+    fun onSearchResult(json: String?) {
+        found = runCatching { JSONObject(json ?: "") }.getOrNull()?.let {
+            Triple(it.optInt("count"), it.optInt("index", -1), it.optBoolean("capped"))
+        }
+    }
+
+    fun endSearch() {
+        searching = false
+        found = null
+        webView.evaluateJavascript("window.prSearchClear && prSearchClear()", null)
+    }
+
+    LaunchedEffect(searching, query) {
+        if (!searching) return@LaunchedEffect
+        if (query.isBlank()) {
+            webView.evaluateJavascript("prSearchClear()", null)
+            found = null
+            return@LaunchedEffect
+        }
+        kotlinx.coroutines.delay(350) // search once typing pauses
+        webView.evaluateJavascript("prSearch(${jsString(query)})", ::onSearchResult)
+    }
 
     BackHandler {
         if (drawerState.isOpen) {
@@ -178,6 +218,8 @@ fun ReaderScreen(bookId: Long, onClose: () -> Unit) {
             }
         }
     }
+
+    BackHandler(enabled = searching) { endSearch() }
 
     fun go(href: String) {
         vm.urlFor(href)?.let { webView.evaluateJavascript("prGo(${jsString(it)})", null) }
@@ -216,12 +258,31 @@ fun ReaderScreen(bookId: Long, onClose: () -> Unit) {
                     webView.evaluateJavascript("prShowHighlight($id)", null)
                     scope.launch { drawerState.close() }
                 },
+                onShare = {
+                    webView.evaluateJavascript("prHighlightExport()") { result ->
+                        val exported = runCatching { org.json.JSONArray(result) }.getOrElse { org.json.JSONArray() }
+                        val send = Intent(Intent.ACTION_SEND).apply {
+                            type = "text/plain"
+                            putExtra(Intent.EXTRA_SUBJECT, "Notes: ${book.title}")
+                            putExtra(Intent.EXTRA_TEXT, vm.notesMarkdown(exported))
+                        }
+                        context.startActivity(Intent.createChooser(send, "Share highlights and notes"))
+                    }
+                },
             )
         },
     ) {
         Scaffold(
             topBar = {
-                TopAppBar(
+                if (searching) {
+                    SearchBar(
+                        query = query,
+                        found = found,
+                        onQuery = { query = it },
+                        onStep = { dir -> webView.evaluateJavascript("prSearchStep($dir)", ::onSearchResult) },
+                        onClose = ::endSearch,
+                    )
+                } else TopAppBar(
                     title = {
                         Column {
                             Text(
@@ -243,10 +304,24 @@ fun ReaderScreen(bookId: Long, onClose: () -> Unit) {
                         IconButton(onClick = onClose) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Library") }
                     },
                     actions = {
+                        IconButton(onClick = { searching = true }) { Icon(Icons.Default.Search, "Search in paper") }
                         IconButton(onClick = { scope.launch { drawerState.open() } }) {
                             Icon(Icons.AutoMirrored.Filled.List, "Contents")
                         }
                         IconButton(onClick = { showSettings = true }) { Icon(Icons.Default.Settings, "Reading settings") }
+                        if (vm.originalPdf != null) {
+                            Box {
+                                IconButton(onClick = { menu = true }) { Icon(Icons.Default.MoreVert, "More") }
+                                DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                                    DropdownMenuItem(text = { Text("Original PDF page") }, onClick = {
+                                        menu = false
+                                        webView.evaluateJavascript("prPdfPage()") { r ->
+                                            vm.popup = Popup.PdfPage(r?.toIntOrNull()?.coerceAtLeast(0) ?: 0)
+                                        }
+                                    })
+                                }
+                            }
+                        }
                     },
                 )
             },
@@ -279,6 +354,7 @@ private fun ReaderDrawer(
     chapterTitle: (String) -> String,
     onSelect: (String) -> Unit,
     onHighlight: (Long) -> Unit,
+    onShare: () -> Unit,
 ) {
     var tab by rememberSaveable { mutableIntStateOf(0) }
     ModalDrawerSheet {
@@ -291,7 +367,7 @@ private fun ReaderDrawer(
         if (tab == 0) {
             TocList(epub, currentHref, isOpen, onSelect)
         } else {
-            HighlightList(epub, highlights, lost, chapterTitle, onHighlight)
+            HighlightList(epub, highlights, lost, chapterTitle, onHighlight, onShare)
         }
     }
 }
@@ -303,6 +379,7 @@ private fun HighlightList(
     lost: Set<Long>,
     chapterTitle: (String) -> String,
     onHighlight: (Long) -> Unit,
+    onShare: () -> Unit,
 ) {
     if (highlights.isEmpty()) {
         Text(
@@ -316,6 +393,13 @@ private fun HighlightList(
     // In reading order: by chapter, then position.
     val sorted = remember(highlights) { highlights.sortedWith(compareBy({ epub.spine.indexOf(it.chapter) }, { it.start })) }
     LazyColumn(Modifier.fillMaxSize()) {
+        item(key = "share") {
+            TextButton(onClick = onShare, modifier = Modifier.padding(start = 12.dp, top = 8.dp)) {
+                Icon(Icons.Default.Share, null, Modifier.size(18.dp))
+                Spacer(Modifier.width(8.dp))
+                Text("Share as Markdown")
+            }
+        }
         itemsIndexed(sorted, key = { _, h -> h.id }) { i, h ->
             if (i == 0 || sorted[i - 1].chapter != h.chapter) {
                 Text(
@@ -456,14 +540,17 @@ private fun PopupLayer(vm: ReaderViewModel, webView: WebView) {
                     modifier = Modifier
                         .fillMaxWidth()
                         .heightIn(max = 480.dp)
-                        .clickable { vm.popup = Popup.Image(p.src) },
+                        .clickable { vm.popup = Popup.Image(p.src, p.pdfPage, p.pdfClip) },
                 )
                 if (p.caption.isNotEmpty()) {
                     Spacer(Modifier.height(12.dp))
                     Text(p.caption, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(horizontal = 8.dp))
                 }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                    TextButton(onClick = { vm.popup = Popup.Image(p.src) }) { Text("Zoom") }
+                    if (p.pdfPage >= 0 && vm.originalPdf != null) {
+                        TextButton(onClick = { vm.popup = Popup.PdfPage(p.pdfPage, p.pdfClip) }) { Text("PDF page") }
+                    }
+                    TextButton(onClick = { vm.popup = Popup.Image(p.src, p.pdfPage, p.pdfClip) }) { Text("Zoom") }
                     TextButton(onClick = {
                         webView.evaluateJavascript("prJump(${jsString(p.target)})", null)
                         vm.popup = null
@@ -471,7 +558,17 @@ private fun PopupLayer(vm: ReaderViewModel, webView: WebView) {
                 }
             }
         }
-        is Popup.Image -> ImageViewer(file = vm.fileFor(p.src), onDismiss = dismiss)
+        is Popup.Image -> ImageViewer(
+            file = vm.fileFor(p.src),
+            onDismiss = dismiss,
+            onOriginalPage = if (p.pdfPage >= 0 && vm.originalPdf != null) {
+                { vm.popup = Popup.PdfPage(p.pdfPage, p.pdfClip) }
+            } else null,
+        )
+        is Popup.PdfPage -> vm.originalPdf?.let { pdf ->
+            val clip = p.clip.split(',').mapNotNull { it.trim().toFloatOrNull() }.takeIf { it.size == 4 }?.toFloatArray()
+            PdfPageViewer(pdf, p.page, clip, onDismiss = dismiss)
+        } ?: run { vm.popup = null }
         is Popup.Highlight -> HighlightSheet(vm, webView, p)
     }
 }
@@ -550,4 +647,50 @@ private fun HighlightSheet(vm: ReaderViewModel, webView: WebView, p: Popup.Highl
         }
     }
     LaunchedEffect(p.id) { if (p.editNote) focus.requestFocus() }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SearchBar(
+    query: String,
+    found: Triple<Int, Int, Boolean>?,
+    onQuery: (String) -> Unit,
+    onStep: (Int) -> Unit,
+    onClose: () -> Unit,
+) {
+    val focus = remember { FocusRequester() }
+    LaunchedEffect(Unit) { focus.requestFocus() }
+    TopAppBar(
+        navigationIcon = { IconButton(onClick = onClose) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Close search") } },
+        title = {
+            TextField(
+                value = query,
+                onValueChange = onQuery,
+                placeholder = { Text("Search in paper") },
+                singleLine = true,
+                colors = TextFieldDefaults.colors(
+                    focusedContainerColor = Color.Transparent,
+                    unfocusedContainerColor = Color.Transparent,
+                    focusedIndicatorColor = Color.Transparent,
+                    unfocusedIndicatorColor = Color.Transparent,
+                ),
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                keyboardActions = KeyboardActions(onSearch = { onStep(1) }),
+                modifier = Modifier.fillMaxWidth().focusRequester(focus),
+            )
+        },
+        actions = {
+            if (found != null && query.isNotBlank()) {
+                val (count, index, capped) = found
+                Text(
+                    if (count == 0) "None" else "${index + 1} of $count${if (capped) "+" else ""}",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            val any = (found?.first ?: 0) > 0
+            IconButton(onClick = { onStep(-1) }, enabled = any) { Icon(Icons.Default.KeyboardArrowUp, "Previous match") }
+            IconButton(onClick = { onStep(1) }, enabled = any) { Icon(Icons.Default.KeyboardArrowDown, "Next match") }
+        },
+    )
 }

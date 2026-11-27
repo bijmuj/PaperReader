@@ -22,8 +22,11 @@ class Library(private val context: Context, private val dao: BookDao) {
 
     fun folder(book: Book) = File(booksDir, book.folder)
 
-    /** Unpacks the EPUB at [uri] and adds it to the library. Returns the new book id. */
-    suspend fun import(uri: Uri): Long = withContext(Dispatchers.IO) {
+    /**
+     * Unpacks the EPUB at [uri] and adds it to the library, keeping [original] (the PDF it was
+     * converted from) beside it. Returns the new book id.
+     */
+    suspend fun import(uri: Uri, original: File? = null): Long = withContext(Dispatchers.IO) {
         val folder = UUID.randomUUID().toString()
         val dest = File(booksDir, folder)
         try {
@@ -32,6 +35,7 @@ class Library(private val context: Context, private val dao: BookDao) {
             val epub = runCatching { EpubBook.parse(dest) }.getOrElse {
                 throw IOException("${displayName(uri) ?: "This file"} is not a readable EPUB", it)
             }
+            original?.copyTo(File(dest, ORIGINAL_PDF), overwrite = true)
             dao.insert(
                 Book(
                     title = epub.title,
@@ -81,3 +85,6 @@ class Library(private val context: Context, private val dao: BookDao) {
         }
     }.getOrNull()
 }
+
+/** The PDF a book was converted from, kept in the book's folder. */
+const val ORIGINAL_PDF = "original.pdf"

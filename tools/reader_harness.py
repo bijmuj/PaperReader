@@ -123,6 +123,10 @@ window.PaperReader = new Proxy({}, { get: (_, name) => (...args) => window.calls
     prAddHighlight(Object.assign({}, sel, { id: 9004 }));
     document.querySelector('mark[data-hl="9004"]').click();
     results.hlTap = calls.filter(c => c[0] === 'onHighlight');
+    const exp = prHighlightExport().find(x => x.id === 9004);
+    results.hlExport = exp && { section: exp.section, text: exp.text.slice(Math.max(0, exp.text.indexOf('$') - 80), exp.text.indexOf('$') + 160) };
+    results.hlExportTex = !!exp && (!p.querySelector('math') || /\$[^$]+\$/.test(exp.text));
+    results.hlExportSection = !!exp && exp.section.length > 0;
   }
 
   // Long-press on one symbol of a display equation: the highlight takes the whole formula.
@@ -145,7 +149,40 @@ window.PaperReader = new Proxy({}, { get: (_, name) => (...args) => window.calls
     }
   }
 
-    document.title = 'RESULT:' + JSON.stringify(results);
+    // Search: counts, ranges matching the query, stepping, phrases across inline markup, Back.
+  {
+    const startChapter = 0;
+    const st = prSearch('the');
+    results.searchCount = st.count;
+    results.searchFound = st.count > 0 && st.index >= 0;
+    results.searchRangeText = CSS.highlights.get('pr-search-current') ? [...CSS.highlights.get('pr-search-current')][0].toString() : null;
+    results.searchMatchesQuery = (results.searchRangeText || '').toLowerCase() === 'the';
+    const next = prSearchStep(1);
+    results.searchStep = next.index === (st.index + 1) % st.count;
+    const back = prSearchStep(-1);
+    results.searchStepBack = back.index === st.index;
+    // a phrase spanning a link: the words just before a link plus the start of its text
+    const a = [...document.querySelectorAll('.pr-chapter p a')].find(a => /^\w{3,}/.test(a.textContent) && /\w{3,} $/.test(a.previousSibling && a.previousSibling.textContent || ''));
+    if (a) {
+      const phrase = (a.previousSibling.textContent.match(/(\w{3,}) $/)[1] + ' ' + a.textContent.match(/^\w{3,}/)[0]);
+      const ps = prSearch(phrase.toUpperCase());
+      const cur = [...CSS.highlights.get('pr-search-current') || []][0];
+      results.searchAcrossLink = ps.count > 0 && !!cur && cur.toString().toLowerCase().replace(/\s+/g, ' ') === phrase.toLowerCase();
+    }
+    results.searchNone = prSearch('zzqqxx no such text').count === 0;
+    prSearchClear();
+    while (prBack()) {}
+    prSearch('th'); prSearch('the'); prSearch('them');
+    results.searchOneBackStep = prBack() === true && prBack() === false;
+    prSearchClear();
+    prSearch('the');
+    results.searchBack = prBack() === true;
+    prSearchClear();
+    results.searchCleared = !CSS.highlights.has('pr-search') && !CSS.highlights.has('pr-search-current');
+    results.pdfPage = prPdfPage();
+  }
+
+  document.title = 'RESULT:' + JSON.stringify(results);
 })();
 </script>
 """

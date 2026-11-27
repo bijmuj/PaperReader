@@ -72,3 +72,6 @@ mark.pr-hl-blue { background: rgba(70, 145, 255, 0.36); }
 mark.pr-hl-pink { background: rgba(255, 80, 150, 0.34); }
 mark.pr-hl-block { display: inline-block; width: max-content; padding: 0.15em 0.4em; border-radius: 6px; }
 mark.pr-hl-note { text-decoration: underline dotted; text-decoration-thickness: 2px; text-underline-offset: 0.2em; }
+/* Search matches (CSS Custom Highlight API). */
+::highlight(pr-search) { background-color: rgba(255, 170, 0, 0.35); }
+::highlight(pr-search-current) { background-color: rgba(255, 120, 0, 0.85); color: #000; }

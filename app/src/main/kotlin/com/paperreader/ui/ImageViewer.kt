@@ -59,7 +59,7 @@ fun LocalImage(file: File?, maxSide: Int, modifier: Modifier = Modifier) {
 
 /** Full-screen viewer: pinch to zoom around the fingers, drag to pan, double-tap to toggle 3x. */
 @Composable
-fun ImageViewer(file: File?, onDismiss: () -> Unit) {
+fun ImageViewer(file: File?, onDismiss: () -> Unit, onOriginalPage: (() -> Unit)? = null) {
     Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
@@ -79,12 +79,18 @@ fun ImageViewer(file: File?, onDismiss: () -> Unit) {
                 onClick = onDismiss,
                 modifier = Modifier.align(Alignment.TopEnd).safeDrawingPadding().padding(8.dp),
             ) { Icon(Icons.Default.Close, "Close", tint = Color.White) }
+            if (onOriginalPage != null) {
+                androidx.compose.material3.TextButton(
+                    onClick = onOriginalPage,
+                    modifier = Modifier.align(Alignment.BottomCenter).safeDrawingPadding().padding(bottom = 12.dp),
+                ) { Text("Show on PDF page", color = Color.White) }
+            }
         }
     }
 }
 
 @Composable
-private fun ZoomableImage(bitmap: ImageBitmap) {
+internal fun ZoomableImage(bitmap: ImageBitmap) {
     var scale by remember { mutableFloatStateOf(1f) }
     var offset by remember { mutableStateOf(Offset.Zero) }
     BoxWithConstraints(Modifier.fillMaxSize()) {

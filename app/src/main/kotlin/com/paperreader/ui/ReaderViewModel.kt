@@ -32,8 +32,11 @@ const val SHELL_PAGE = "__reader__.html"
 sealed interface Popup {
     /** [target] is a local element id in the book page, for "Go to". */
     data class Note(val target: String, val text: String) : Popup
-    data class Figure(val target: String, val src: String, val caption: String) : Popup
-    data class Image(val src: String) : Popup
+    /** [pdfPage] and [pdfClip]: where the figure is in the original PDF (-1 and "" if unknown). */
+    data class Figure(val target: String, val src: String, val caption: String, val pdfPage: Int = -1, val pdfClip: String = "") : Popup
+    data class Image(val src: String, val pdfPage: Int = -1, val pdfClip: String = "") : Popup
+    /** A page of the original PDF, outlining [clip] ("x0,y0,x1,y1" in points) if given. */
+    data class PdfPage(val page: Int, val clip: String = "") : Popup
     /** A highlight's sheet; [editNote] focuses the note field (the "Note" selection action). */
     data class Highlight(val id: Long, val editNote: Boolean = false) : Popup
 }
@@ -155,6 +158,40 @@ class ReaderViewModel(private val app: PaperReaderApp, private val bookId: Long)
     }
 
     /** Title of the chapter at [index]: its first table-of-contents entry. */
+    /**
+     * The highlights and notes as Markdown, in reading order under their section headings.
+     * [exported] is prHighlightExport()'s result: each highlight's text (formulas as TeX) and
+     * heading; highlights missing from it (not found in the text) use the stored quote.
+     */
+    fun notesMarkdown(exported: org.json.JSONArray): String {
+        val fromPage = HashMap<Long, Pair<String, String>>()
+        for (i in 0 until exported.length()) {
+            val o = exported.getJSONObject(i)
+            fromPage[o.getLong("id")] = o.optString("section") to o.optString("text")
+        }
+        val spine = epub?.spine.orEmpty()
+        val sorted = _highlights.value.sortedWith(compareBy({ spine.indexOf(it.chapter) }, { it.start }))
+        val out = StringBuilder()
+        val b = book
+        out.append("# ").append(b?.title ?: "Notes").append("\n\n")
+        if (!b?.authors.isNullOrBlank()) out.append(b?.authors).append("\n\n")
+        var lastSection: String? = null
+        for (h in sorted) {
+            val (pageSection, pageText) = fromPage[h.id] ?: ("" to "")
+            // A paper without detected headings is one chapter named after the paper: no heading then.
+            val section = pageSection.ifBlank { chapterTitle(spine.indexOf(h.chapter)) }
+                .takeUnless { it.trim().equals(b?.title?.trim(), ignoreCase = true) }.orEmpty()
+            if (section != lastSection) {
+                if (section.isNotBlank()) out.append("## ").append(section).append("\n\n")
+                lastSection = section
+            }
+            val text = pageText.ifBlank { h.quote.replace(Regex("\\s+"), " ").trim() }
+            out.append(text.lines().joinToString("\n") { if (it.isEmpty()) ">" else "> $it" }).append("\n\n")
+            if (h.note.isNotBlank()) out.append(h.note.trim()).append("\n\n")
+        }
+        return out.toString().trimEnd() + "\n"
+    }
+
     fun chapterTitle(index: Int): String {
         val e = epub ?: return ""
         val href = e.spine.getOrNull(index) ?: return ""
@@ -182,6 +219,10 @@ class ReaderViewModel(private val app: PaperReaderApp, private val bookId: Long)
     }
 
     /** Local file behind a reader URL (images for the zoom viewer). */
+    /** The PDF this book was converted from, if it was. */
+    val originalPdf: File?
+        get() = book?.let { File(app.library.folder(it), com.paperreader.epub.ORIGINAL_PDF).takeIf(File::isFile) }
+
     fun fileFor(url: String): File? {
         val b = book ?: return null
         val uri = Uri.parse(url)
