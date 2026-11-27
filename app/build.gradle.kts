@@ -12,6 +12,8 @@ android {
 
     defaultConfig {
         applicationId = "com.paperreader"
+        // MuPDF ships native code for four ABIs; phones are arm64, emulators x86_64.
+        ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
         minSdk = 29
         targetSdk = 36
         versionCode = 1
@@ -46,6 +48,7 @@ dependencies {
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.androidx.webkit)
     implementation(libs.jsoup)
+    implementation(libs.mupdf.fitz)
 
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.compose.ui)

@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <!-- Debug builds only: converts files/debug/<name>.pdf to files/debug/<name>.epub, for
+             comparing the phone's PDF converter with the desktop one over adb. -->
+        <receiver android:name=".debug.ConvertReceiver" android:exported="true" />
+    </application>
+</manifest>

@@ -75,7 +75,7 @@ class Library(private val context: Context, private val dao: BookDao) {
         if (entries == 0) throw IOException("Not a ZIP/EPUB file")
     }
 
-    private fun displayName(uri: Uri): String? = runCatching {
+    fun displayName(uri: Uri): String? = runCatching {
         context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use {
             if (it.moveToFirst()) it.getString(0) else null
         }

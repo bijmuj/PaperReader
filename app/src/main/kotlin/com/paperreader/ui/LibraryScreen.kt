@@ -90,9 +90,9 @@ fun LibraryScreen(
                             addMenu = false
                             arxivDialog = true
                         })
-                        DropdownMenuItem(text = { Text("EPUB file…") }, onClick = {
+                        DropdownMenuItem(text = { Text("PDF or EPUB file…") }, onClick = {
                             addMenu = false
-                            picker.launch(arrayOf("application/epub+zip", "*/*"))
+                            picker.launch(arrayOf("application/pdf", "application/epub+zip", "*/*"))
                         })
                     }
                 }
@@ -117,8 +117,8 @@ fun LibraryScreen(
                 list == null -> Unit
                 list.isEmpty() -> Box(Modifier.fillMaxSize().padding(32.dp), contentAlignment = Alignment.Center) {
                     Text(
-                        "No papers yet.\n\nTap Add paper and paste an arXiv link, or share a link to Paper Reader " +
-                            "from your browser. EPUBs made with paper2epub can be imported too.",
+                        "No papers yet.\n\nTap Add paper to paste an arXiv link or pick a PDF, or share a link or " +
+                            "a PDF to Paper Reader from another app.",
                         textAlign = TextAlign.Center,
                         style = MaterialTheme.typography.bodyLarge,
                     )

@@ -27,6 +27,9 @@ import android.util.Log
 import com.paperreader.PaperReaderApp
 import com.paperreader.convert.Arxiv
 import com.paperreader.convert.convertArxiv
+import com.paperreader.convert.convertPdf
+import androidx.core.content.IntentCompat
+import java.io.IOException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -35,7 +38,7 @@ import kotlinx.coroutines.launch
 import androidx.compose.runtime.rememberCoroutineScope
 
 class MainActivity : ComponentActivity() {
-    /** An EPUB handed to us by another app ("Open with"), waiting to be imported. */
+    /** A PDF or EPUB handed to us by another app ("Open with" or share), waiting to be added. */
     private val incoming = MutableStateFlow<Uri?>(null)
 
     /** Text shared to us (an arXiv link), waiting to be converted. */
@@ -63,7 +66,11 @@ class MainActivity : ComponentActivity() {
     private fun handleIntent(intent: Intent?) {
         when (intent?.action) {
             Intent.ACTION_VIEW -> intent.data?.let { incoming.value = it }
-            Intent.ACTION_SEND -> intent.getStringExtra(Intent.EXTRA_TEXT)?.let { sharedText.value = it }
+            Intent.ACTION_SEND -> {
+                val stream = IntentCompat.getParcelableExtra(intent, Intent.EXTRA_STREAM, Uri::class.java)
+                if (stream != null) incoming.value = stream
+                else intent.getStringExtra(Intent.EXTRA_TEXT)?.let { sharedText.value = it }
+            }
         }
     }
 }
@@ -77,16 +84,36 @@ private fun AppRoot(incoming: MutableStateFlow<Uri?>, sharedText: MutableStateFl
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
 
+    /** Adds a PDF (converted here) or an EPUB. */
     fun import(uri: Uri) {
         if (status != null) return
-        status = "Importing"
+        status = "Opening"
         scope.launch {
+            val pdf = File(app.cacheDir, "converted/paper.pdf")
+            val out = File(app.cacheDir, "converted/paper.epub")
             try {
-                openBook = app.library.import(uri)
+                if (withContext(Dispatchers.IO) { isPdf(app, uri) }) {
+                    status = "Reading PDF"
+                    withContext(Dispatchers.IO) {
+                        out.parentFile?.mkdirs()
+                        val input = app.contentResolver.openInputStream(uri) ?: throw IOException("Cannot open file")
+                        input.use { i -> pdf.outputStream().use { i.copyTo(it) } }
+                        val name = app.library.displayName(uri)?.substringBeforeLast('.') ?: "Untitled"
+                        convertPdf(pdf, out, name) { line -> scope.launch { if (status != null) status = line } }
+                    }
+                    status = "Importing"
+                    openBook = app.library.import(Uri.fromFile(out))
+                } else {
+                    status = "Importing"
+                    openBook = app.library.import(uri)
+                }
             } catch (e: Exception) {
+                Log.e("PaperReader", "Adding $uri failed", e)
                 openBook = null
                 snackbar.showSnackbar(e.message ?: "Import failed")
             } finally {
+                pdf.delete()
+                out.delete()
                 status = null
             }
         }
@@ -160,3 +187,12 @@ fun PaperReaderTheme(content: @Composable () -> Unit) {
     }
     MaterialTheme(colorScheme = scheme, content = content)
 }
+
+/** Whether [uri] holds a PDF (by its header, since file managers don't always label files). */
+private fun isPdf(context: android.content.Context, uri: Uri): Boolean = runCatching {
+    context.contentResolver.openInputStream(uri)?.use { input ->
+        val head = ByteArray(1024)
+        val n = input.read(head)
+        n > 4 && String(head, 0, n, Charsets.ISO_8859_1).contains("%PDF-")
+    } ?: false
+}.getOrDefault(false)

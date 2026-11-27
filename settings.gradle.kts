@@ -17,6 +17,10 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
+        // MuPDF (AGPL), for converting PDFs on the phone.
+        maven("https://maven.ghostscript.com") {
+            content { includeGroup("com.artifex.mupdf") }
+        }
     }
 }
 

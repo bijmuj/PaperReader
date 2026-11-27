@@ -459,7 +459,7 @@ def _find_captioned(page: Page, stats: Stats, used_ids: set[str], convention: di
             region.y0 = max(region.y0, cap.bbox.y1 + 1)
         for g in chosen:
             g.used = True
-        texts = _absorb_text(page, region, exclude=cap, stats=stats)
+        texts = _absorb_text(page, region, exclude=cap, stats=stats, own=chosen)
         for t in texts:
             region |= t.bbox
         cap.role = "caption"
@@ -599,9 +599,11 @@ def _chain_graphics(page: Page, cap: Block, direction: str, stats: Stats) -> lis
             return chosen
 
 
-def _absorb_text(page: Page, region: pymupdf.Rect, exclude: Block | None, stats: Stats) -> list[Block]:
+def _absorb_text(page: Page, region: pymupdf.Rect, exclude: Block | None, stats: Stats, own: list[Graphic]) -> list[Block]:
     """Pulls in text inside a figure region and short labels just outside it."""
     absorbed: list[Block] = []
+    # Labels sitting on another figure's graphics belong to that figure.
+    others = [g.bbox + (-3, -3, 3, 3) for g in page.graphics if all(g is not o for o in own)]
     changed = True
     while changed:
         changed = False
@@ -628,7 +630,9 @@ def _absorb_text(page: Page, region: pymupdf.Rect, exclude: Block | None, stats:
                 and region.y0 - 2 <= (b.bbox.y0 + b.bbox.y1) / 2 <= region.y1 + 2
                 and (0 <= region.x0 - b.bbox.x1 <= 25 or 0 <= b.bbox.x0 - region.x1 <= 25)
             )
-            if inside or near or side:
+            cx, cy = (b.bbox.x0 + b.bbox.x1) / 2, (b.bbox.y0 + b.bbox.y1) / 2
+            elsewhere = not inside and any(o.contains(pymupdf.Point(cx, cy)) for o in others)
+            if (inside or near or side) and not elsewhere:
                 absorbed.append(b)
                 b.role = "used"
                 region |= b.bbox
@@ -649,7 +653,7 @@ def _find_uncaptioned(page: Page, stats: Stats, used_ids: set[str]) -> None:
             if not other.used and (other.bbox & g.bbox).get_area() > 0.8 * max(other.bbox.get_area(), 1):
                 other.used = True
         region = pymupdf.Rect(g.bbox)
-        texts = _absorb_text(page, region, exclude=None, stats=stats)
+        texts = _absorb_text(page, region, exclude=None, stats=stats, own=[g])
         for t in texts:
             region |= t.bbox
         page.visuals.append(
@@ -668,7 +672,7 @@ def _find_uncaptioned(page: Page, stats: Stats, used_ids: set[str]) -> None:
             continue
         g.used = True
         region = pymupdf.Rect(g.bbox)
-        texts = _absorb_text(page, region, exclude=None, stats=stats)
+        texts = _absorb_text(page, region, exclude=None, stats=stats, own=[g])
         for t in texts:
             region |= t.bbox
         page.visuals.append(
