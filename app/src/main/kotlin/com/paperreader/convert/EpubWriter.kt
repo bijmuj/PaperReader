@@ -19,7 +19,7 @@ import java.util.zip.ZipOutputStream
 sealed interface DocElement
 
 /** A heading; [html] is inline XHTML. Level-1 headings start a new chapter. */
-data class Heading(val level: Int, val html: String, val id: String) : DocElement
+data class Heading(val level: Int, val html: String, val id: String, val pdfPage: Int = -1) : DocElement
 
 /** A ready-made XHTML block (paragraph, table, equation, figure, list). */
 data class Block(val html: String) : DocElement
@@ -140,7 +140,8 @@ object EpubWriter {
                 when (e) {
                     is Heading -> {
                         val lvl = (e.level.coerceAtLeast(1) + 1).coerceAtMost(6) // h1 is the paper title
-                        body.append("<h$lvl id=\"${xmlEscape(e.id)}\">${fixLinks(e.html)}</h$lvl>\n")
+                        val page = if (e.pdfPage >= 0) " data-pdf-page=\"${e.pdfPage}\"" else ""
+                        body.append("<h$lvl id=\"${xmlEscape(e.id)}\"$page>${fixLinks(e.html)}</h$lvl>\n")
                     }
                     is Block -> body.append(fixLinks(e.html)).append('\n')
                 }

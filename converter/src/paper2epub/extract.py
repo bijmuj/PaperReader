@@ -44,6 +44,10 @@ CAPTION_RE = re.compile(
 NUMBER_PREFIX_RE = re.compile(
     r"^(\d+(\.\d+)*\.?|[A-Z](\.\d+)+\.?|[A-Z]\.|[IVX]+\.)\s+(?=\S)"
 )
+# IEEE style: "II. RELATED WORK" (small caps, body size, not bold) and "A. Overview" (italic).
+IEEE_SECTION_RE = re.compile(r"^[IVX]+\.\s+[A-Z][A-Z0-9 ,:;&()/'-]*[A-Z)]$")
+IEEE_SUBSECTION_RE = re.compile(r"^[A-Z]\.\s+[A-Z0-9]\S*(\s+\S+){0,9}$")
+ALL_CAPS_RE = re.compile(r"^[A-Z0-9][A-Z0-9 ,:;&()/'-]*$")
 KNOWN_HEADINGS = {
     "abstract", "introduction", "relatedwork", "background", "method", "methods",
     "methodology", "experiments", "results", "discussion", "conclusion",
@@ -125,6 +129,7 @@ class Graphic:
     native: tuple[int, int] = (0, 0)  # pixel size for raster images
     upright: bool = True
     used: bool = False
+    extent: pymupdf.Rect | None = None  # ruled tables: the rules, rendered along with the text
 
 
 @dataclass
@@ -273,7 +278,8 @@ def _read_page(page: pymupdf.Page, pno: int, registry: list[dict]) -> Page:
             )
         )
     page_area = page.rect.width * page.rect.height
-    for r in page.cluster_drawings():
+    drawings = page.get_drawings()
+    for r in page.cluster_drawings(drawings=drawings):
         r = pymupdf.Rect(r) & page.rect
         if r.is_empty or r.width * r.height > 0.9 * page_area:
             continue
@@ -281,11 +287,47 @@ def _read_page(page: pymupdf.Page, pno: int, registry: list[dict]) -> Page:
             continue
         graphics.append(Graphic(r, "drawing"))
     try:
+        rules = _rules(drawings)
         for t in page.find_tables().tables:
-            graphics.append(Graphic(pymupdf.Rect(t.bbox), "table"))
+            box = pymupdf.Rect(t.bbox)
+            graphics.append(Graphic(box, "table", extent=_rule_extent(box, rules)))
     except Exception:  # table detection is best-effort
         pass
     return Page(pno, page.rect, blocks, graphics, [])
+
+
+def _rules(drawings: list[dict]) -> list[pymupdf.Rect]:
+    """Horizontal rules: straight horizontal strokes and thin filled boxes."""
+    out = []
+    for d in drawings:
+        if any(it[0] == "c" for it in d["items"]):
+            continue  # rounded boxes and other shapes
+        for it in d["items"]:
+            if it[0] == "l" and "s" in d["type"]:
+                a, b = it[1], it[2]
+                if abs(a.y - b.y) < 0.5 and abs(a.x - b.x) >= 20:
+                    y = (a.y + b.y) / 2
+                    out.append(pymupdf.Rect(min(a.x, b.x), y, max(a.x, b.x), y))
+            elif it[0] == "re" and "f" in d["type"]:
+                r = it[1]
+                if r.height <= 1.5 and r.width >= 20:
+                    y = (r.y0 + r.y1) / 2
+                    out.append(pymupdf.Rect(r.x0, y, r.x1, y))
+    return out
+
+
+def _rule_extent(table: pymupdf.Rect, rules: list[pymupdf.Rect]) -> pymupdf.Rect | None:
+    """The table's box grown to the rules framing it (the table finder stops at the text)."""
+    near = [
+        r for r in rules
+        if table.y0 - 8 <= r.y0 <= table.y1 + 8 and _xoverlap(r, table) >= 0.5 * min(r.width, table.width)
+    ]
+    if not near:
+        return None
+    out = pymupdf.Rect(table)
+    for r in near:
+        out.include_rect(pymupdf.Rect(r.x0, r.y0, r.x1, r.y1 + 0.01))
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -810,11 +852,54 @@ def _mark_headings(pages: list[Page], toc: list, stats: Stats) -> None:
             if any(ln.heading for ln in b.lines):
                 continue
             _heuristic_heading(b, stats)
+        # An IEEE section title wrapping onto a line of its own: "IV. DATASET FOR ..." / "RECONSTRUCTION".
+        for prev, b in zip(p.blocks, p.blocks[1:]):
+            last = prev.lines[-1]
+            if (last.heading == 1 and IEEE_SECTION_RE.match(prev.lines[0].text.strip()) and b.role == "body"
+                    and len(b.lines) == 1 and not b.lines[0].heading and ALL_CAPS_RE.match(b.lines[0].text.strip())
+                    and 0 <= b.bbox.y0 - last.bbox.y1 < last.max_size and b.bbox.x0 < last.bbox.x1 and b.bbox.x1 > last.bbox.x0):
+                b.lines[0].heading = 1
+                prev.lines.append(b.lines[0])  # one block, so the two lines make one heading
+                prev.bbox = prev.bbox | b.bbox
+                b.role = "used"
+
+
+def _ieee_heading(b: Block, stats: Stats) -> tuple[int, int]:
+    """(level, lines) of an IEEE-style heading starting [b], or (0, 0).
+
+    These are neither bold nor larger than the text: "II. RELATED WORK" in small caps (so
+    judged by its largest glyphs) and "A. Overview" in italics, either wrapping onto more lines.
+    """
+    first = b.lines[0]
+    text = first.text.strip()
+    if len(text) > 80 or max(first.size, first.max_size) < stats.body_size - 0.6 or first.bold:
+        return 0, 0
+    if IEEE_SECTION_RE.match(text):
+        return 1, 1
+
+    def italic(ln: Line) -> bool:
+        return all(r.italic for r in ln.runs if r.text.strip())
+
+    if not (italic(first) and IEEE_SUBSECTION_RE.match(text)):
+        return 0, 0
+    count = 1
+    while count < min(len(b.lines), 3) and italic(b.lines[count]):
+        count += 1
+    if count < len(b.lines) and italic(b.lines[count]):
+        return 0, 0  # an italic paragraph, not a heading
+    if b.lines[count - 1].text.strip().endswith("."):
+        return 0, 0
+    return 2, count
 
 
 def _heuristic_heading(b: Block, stats: Stats) -> None:
     first = b.lines[0]
     text = first.text.strip()
+    level, count = _ieee_heading(b, stats)
+    if level:
+        for ln in b.lines[:count]:
+            ln.heading = level
+        return
     if not first.bold or len(text) > 100 or first.size < stats.body_size - 0.6:
         # Unnumbered headings set in a larger regular font (e.g. "Abstract").
         if not (len(b.lines) == 1 and _norm(text) in KNOWN_HEADINGS and first.size >= stats.body_size):
@@ -1067,7 +1152,11 @@ def _render(doc: pymupdf.Document, v: VisualRegion, zoom_default: float) -> tupl
     for g in images:
         if g.native[0] and g.bbox.width:
             zoom = max(zoom, g.native[0] / g.bbox.width)
-    clip = (v.clip + (-2, -2, 2, 2)) & page.rect
+    area = pymupdf.Rect(v.clip)
+    for g in v.graphics:
+        if g.extent is not None:
+            area |= g.extent
+    clip = (area + (-2, -2, 2, 2)) & page.rect
     zoom = min(zoom, 8.0, MAX_IMAGE_PX / max(clip.width, clip.height, 1))
     pix = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), clip=clip, alpha=False)
     return pix.tobytes("png"), "png"
@@ -1216,14 +1305,14 @@ class _Assembler:
                 rows.append([b])
         for row in rows:
             for col in _split([_Item(b.bbox, b) for b in row], 0, 0.0):
-                para = Paragraph([], "front")
+                para = Paragraph([], "front", page=row[0].page)
                 for it in sorted(col, key=lambda it: it.bbox.y0):
                     for ln in it.obj.lines:
                         self.add_line(para.content, ln)
                 self.elements.append(para)
 
     def footnote(self, b: Block) -> None:
-        para = Paragraph([], "footnote")
+        para = Paragraph([], "footnote", page=b.page)
         for ln in b.lines:
             self.add_line(para.content, ln)
         self.footnotes.append(para)
@@ -1238,7 +1327,7 @@ class _Assembler:
             return
         self.flush_footnotes()
         self.heading_n += 1
-        h = Heading(ln.heading, [], f"sec-{self.heading_n}")
+        h = Heading(ln.heading, [], f"sec-{self.heading_n}", page=ln.page)
         self.add_line(h.content, ln)
         self.elements.append(h)
         key = _norm(NUMBER_PREFIX_RE.sub("", ln.text.strip()))
@@ -1271,7 +1360,7 @@ class _Assembler:
                     else:
                         para = None
                     if para is None:
-                        para = Paragraph([], "reference")
+                        para = Paragraph([], "reference", page=ln.page)
                         self.elements.append(para)
             else:
                 new = para is None
@@ -1287,7 +1376,7 @@ class _Assembler:
                     if cand is not None and cand.role == "body" and _is_continuation(cand, block):
                         para = cand
                     else:
-                        para = Paragraph([], "body")
+                        para = Paragraph([], "body", page=ln.page)
                         self.elements.append(para)
             self.add_line(para.content, ln)
             prev = ln

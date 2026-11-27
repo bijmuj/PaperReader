@@ -148,10 +148,12 @@ class _Writer:
     def element(self, e) -> str:
         if isinstance(e, Heading):
             lvl = min(max(e.level, 1) + 1, 6)  # h1 is the paper title
-            return f'<h{lvl} id="{_esc(e.id)}">{self.inlines(e.content)}</h{lvl}>'
+            page = f' data-pdf-page="{e.page}"' if e.page >= 0 else ""
+            return f'<h{lvl} id="{_esc(e.id)}"{page}>{self.inlines(e.content)}</h{lvl}>'
         if isinstance(e, Paragraph):
             cls = f' class="{e.role}"' if e.role != "body" else ""
-            return f"<p{cls}>{self.inlines(e.content)}</p>"
+            page = f' data-pdf-page="{e.page}"' if e.page >= 0 else ""
+            return f"<p{cls}{page}>{self.inlines(e.content)}</p>"
         if isinstance(e, Block):
             return self.markup(e.xhtml)
         if isinstance(e, Visual):

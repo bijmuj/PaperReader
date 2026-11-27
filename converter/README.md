@@ -46,8 +46,24 @@ What it does:
   figure they land on. Citation links are marked `epub:type="noteref"` so
   readers that support it show them as pop-ups.
 - Every `<figure>` carries `data-pdf-page` and `data-pdf-clip` (points, top-left
-  origin) so the in-app reader can re-render it from the source PDF at screen
-  resolution.
+  origin), and paragraphs and headings carry `data-pdf-page` (0-based), so the
+  app can show where something is in the original PDF.
 
 Known gaps: tables are images, not HTML tables; inline math is plain text
 (display equations are images); figure detection is heuristic.
+
+## Checking changes
+
+The Android app has a Kotlin port of the PDF converter (`app/src/main/kotlin/com/paperreader/convert/Pdf.kt`)
+that follows `extract.py` heuristic for heuristic, so change both together. From the repository root:
+
+```sh
+# save the desktop output, change extract.py, then see what changed
+uv run --project converter python tools/compare_converters.py --save base/ papers/*.pdf
+uv run --project converter python tools/compare_converters.py --against base/ papers/*.pdf
+
+# desktop vs phone (debug build installed, phone connected over adb)
+uv run --project converter python tools/compare_converters.py --phone papers/*.pdf
+```
+
+`tools/reader_harness.py book.epub` runs the app's reader script (links, highlights, search) in headless Chromium.

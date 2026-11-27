@@ -53,12 +53,14 @@ class Heading:
     level: int
     content: list[Inline]
     id: str
+    page: int = -1  # 0-based source PDF page, when converted from a PDF
 
 
 @dataclass
 class Paragraph:
     content: list[Inline]
     role: str = "body"  # body | front | footnote | reference
+    page: int = -1  # 0-based source PDF page (of its first line), when converted from a PDF
 
 
 @dataclass

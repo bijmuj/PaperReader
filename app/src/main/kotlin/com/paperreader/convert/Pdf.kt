@@ -49,6 +49,10 @@ private val ITALIC_RE = Regex("ital|oblique|CMTI|-I$|\\.I$", RegexOption.IGNORE_
 private val MONO_RE = Regex("mono|courier|CMTT|SFTT|consola|menlo|inconsolata", RegexOption.IGNORE_CASE)
 private val CAPTION_RE = Regex("^\\s*(Figure|Fig\\.|FIGURE|FIG\\.|Table|TABLE)\\s*([A-Z]?\\d+|[IVXL]+)\\s*[:.|]")
 private val NUMBER_PREFIX_RE = Regex("^(\\d+(\\.\\d+)*\\.?|[A-Z](\\.\\d+)+\\.?|[A-Z]\\.|[IVX]+\\.)\\s+(?=\\S)")
+// IEEE style: "II. RELATED WORK" (small caps, body size, not bold) and "A. Overview" (italic).
+private val IEEE_SECTION_RE = Regex("^[IVX]+\\.\\s+[A-Z][A-Z0-9 ,:;&()/'-]*[A-Z)]$")
+private val IEEE_SUBSECTION_RE = Regex("^[A-Z]\\.\\s+[A-Z0-9]\\S*(\\s+\\S+){0,9}$")
+private val ALL_CAPS_RE = Regex("^[A-Z0-9][A-Z0-9 ,:;&()/'-]*$")
 private val KNOWN_HEADINGS = setOf(
     "abstract", "introduction", "relatedwork", "background", "method", "methods",
     "methodology", "experiments", "results", "discussion", "conclusion",
@@ -237,7 +241,11 @@ private const val FLAG_ITALIC = 2
 private const val FLAG_MONO = 8
 private const val FLAG_BOLD = 16
 
-private class TextCollector : StructuredTextWalker {
+/**
+ * [metrics]: ascender and descender per font name, read from the font's characters. Spaces that
+ * MuPDF inserts have boxes of other heights, so they use their font's figures from here.
+ */
+private class TextCollector(private val metrics: MutableMap<String, FloatArray>) : StructuredTextWalker {
     val blocks = mutableListOf<MutableList<RawLine>>()
     private var line: RawLine? = null
     private val fontInfo = HashMap<Font, Pair<String, Int>>()
@@ -269,7 +277,15 @@ private class TextCollector : StructuredTextWalker {
             span = RawSpan(name, size, spanFlags, argb, origin.y)
             ln.spans.add(span)
         }
-        span.chars.add(RawChar(c, charBox(quad, origin, size, sup || abs(ln.dirX - 1) > 1e-3 || abs(ln.dirY) > 1e-3), origin.y))
+        val horizontal = abs(ln.dirX - 1) < 1e-3 && abs(ln.dirY) < 1e-3
+        val raw = Box.of(quad)
+        var box = raw
+        if (horizontal && size > 0) {
+            val m = if (Character.isWhitespace(c)) metrics[name]
+            else floatArrayOf((origin.y - raw.y0) / size, (origin.y - raw.y1) / size).also { metrics[name] = it }
+            if (m != null) box = charBox(raw, origin, size, m[0], m[1])
+        }
+        span.chars.add(RawChar(c, box, origin.y))
     }
 }
 
@@ -278,13 +294,11 @@ private class TextCollector : StructuredTextWalker {
  * fonts), the box is stretched to the full font size. MuPDF's raw box spans the ascender to the
  * descender, so both are read back from it.
  */
-private fun charBox(quad: Quad, origin: Point, size: Float, keep: Boolean): Box {
-    val box = Box.of(quad)
-    if (keep || size <= 0) return box
-    var asc = (origin.y - box.y0) / size
-    var dsc = (origin.y - box.y1) / size
+private fun charBox(raw: Box, origin: Point, size: Float, ascender: Float, descender: Float): Box {
+    var asc = ascender
+    var dsc = descender
     var ascDsc = asc - dsc + 1.1920929e-7f
-    if (ascDsc >= 1) return box
+    if (ascDsc >= 1) return Box(raw.x0, origin.y - asc * size, raw.x1, origin.y - dsc * size)
     if (asc < 1e-3f) {
         dsc = -0.1f
         asc = 0.9f
@@ -295,7 +309,7 @@ private fun charBox(quad: Quad, origin: Point, size: Float, keep: Boolean): Box 
         asc /= ascDsc
     }
     ascDsc = asc - dsc
-    return Box(max(box.x0, origin.x), origin.y - asc * size / ascDsc, box.x1, origin.y - dsc * size / ascDsc)
+    return Box(max(raw.x0, origin.x), origin.y - asc * size / ascDsc, raw.x1, origin.y - dsc * size / ascDsc)
 }
 
 private fun makeLine(pno: Int, raw: RawLine, hitLinks: List<HitLink>): Line? {
@@ -477,11 +491,13 @@ private fun clusterDrawings(paths: List<Box>, page: Box, dx: Float = 3f, dy: Flo
 
 private const val TEXT_OPTIONS = "preserve-whitespace,mediabox-clip,use-cid-for-unknown-unicode"
 
-private fun readPage(doc: FzDocument, page: FzPage, pno: Int, registry: MutableList<LinkInfo>): PPage {
+private fun readPage(
+    doc: FzDocument, page: FzPage, pno: Int, registry: MutableList<LinkInfo>, metrics: MutableMap<String, FloatArray>,
+): PPage {
     val rect = Box.of(page.bounds)
     val hitLinks = readLinks(doc, page, registry)
     val stext = page.toStructuredText(TEXT_OPTIONS)
-    val collector = TextCollector()
+    val collector = TextCollector(metrics)
     try { stext.walk(collector) } finally { stext.destroy() }
     val blocks = mutableListOf<TBlock>()
     for (rawLines in collector.blocks) {
@@ -1008,12 +1024,49 @@ private fun markHeadings(pages: List<PPage>, toc: List<TocEntry>, stats: Stats) 
             if (b.lines.any { it.heading > 0 }) continue
             heuristicHeading(b, stats)
         }
+        // An IEEE section title wrapping onto a line of its own: "IV. DATASET FOR ..." / "RECONSTRUCTION".
+        for ((prev, b) in p.blocks.zipWithNext()) {
+            val last = prev.lines.last()
+            if (last.heading == 1 && IEEE_SECTION_RE.containsMatchIn(prev.lines[0].text.trim()) && b.role == "body" &&
+                b.lines.size == 1 && b.lines[0].heading == 0 && ALL_CAPS_RE.containsMatchIn(b.lines[0].text.trim()) &&
+                b.bbox.y0 - last.bbox.y1 in 0f..last.maxSize && b.bbox.x0 < last.bbox.x1 && b.bbox.x1 > last.bbox.x0
+            ) {
+                b.lines[0].heading = 1
+                prev.lines.add(b.lines[0]) // one block, so the two lines make one heading
+                prev.bbox = Box(prev.bbox).union(b.bbox)
+                b.role = "used"
+            }
+        }
     }
+}
+
+/**
+ * (level, lines) of an IEEE-style heading starting [b], or (0, 0). These are neither bold nor
+ * larger than the text: "II. RELATED WORK" in small caps (so judged by its largest glyphs) and
+ * "A. Overview" in italics, either wrapping onto more lines.
+ */
+private fun ieeeHeading(b: TBlock, stats: Stats): Pair<Int, Int> {
+    val first = b.lines[0]
+    val text = first.text.trim()
+    if (text.length > 80 || max(first.size, first.maxSize) < stats.bodySize - 0.6f || first.bold) return 0 to 0
+    if (IEEE_SECTION_RE.containsMatchIn(text)) return 1 to 1
+    fun italic(ln: Line) = ln.runs.filter { it.text.isNotBlank() }.all { it.italic }
+    if (!(italic(first) && IEEE_SUBSECTION_RE.containsMatchIn(text))) return 0 to 0
+    var count = 1
+    while (count < min(b.lines.size, 3) && italic(b.lines[count])) count++
+    if (count < b.lines.size && italic(b.lines[count])) return 0 to 0 // an italic paragraph
+    if (b.lines[count - 1].text.trim().endsWith(".")) return 0 to 0
+    return 2 to count
 }
 
 private fun heuristicHeading(b: TBlock, stats: Stats) {
     val first = b.lines[0]
     val text = first.text.trim()
+    val (ieee, ieeeLines) = ieeeHeading(b, stats)
+    if (ieee > 0) {
+        for (ln in b.lines.take(ieeeLines)) ln.heading = ieee
+        return
+    }
     if (!first.bold || text.length > 100 || first.size < stats.bodySize - 0.6f) {
         // Unnumbered headings set in a larger regular font (e.g. "Abstract").
         if (!(b.lines.size == 1 && norm(text) in KNOWN_HEADINGS && first.size >= stats.bodySize)) return
@@ -1253,8 +1306,8 @@ private fun render(page: FzPage, pageRect: Box, v: VisualRegion, zoomDefault: Fl
 // Assembly
 
 private sealed interface Elem
-private class HeadingE(val level: Int, val content: MutableList<Inline>, val id: String) : Elem
-private class Paragraph(val content: MutableList<Inline>, val role: String = "body") : Elem
+private class HeadingE(val level: Int, val content: MutableList<Inline>, val id: String, val page: Int) : Elem
+private class Paragraph(val content: MutableList<Inline>, val role: String = "body", val page: Int = -1) : Elem
 private class VisualE(
     val kind: String, val id: String, val image: String, val alt: String, val caption: List<Inline>,
     val page: Int, val clip: Box, val widthEm: Float, val width: Int, val height: Int,
@@ -1354,7 +1407,7 @@ private class Assembler(val targets: Map<Int, String>, val registry: List<LinkIn
         }
         for (row in rows) {
             for (col in split(row.map { Item(it.bbox, it) }, 0, 0f)) {
-                val para = Paragraph(mutableListOf(), "front")
+                val para = Paragraph(mutableListOf(), "front", row[0].page)
                 for (it in col.sortedBy { it.bbox.y0 }) for (ln in (it.obj as TBlock).lines) addLine(para.content, ln)
                 elements.add(para)
             }
@@ -1362,7 +1415,7 @@ private class Assembler(val targets: Map<Int, String>, val registry: List<LinkIn
     }
 
     fun footnote(b: TBlock) {
-        val para = Paragraph(mutableListOf(), "footnote")
+        val para = Paragraph(mutableListOf(), "footnote", b.page)
         for (ln in b.lines) addLine(para.content, ln)
         footnotes.add(para)
     }
@@ -1380,7 +1433,7 @@ private class Assembler(val targets: Map<Int, String>, val registry: List<LinkIn
         }
         flushFootnotes()
         headingN++
-        val h = HeadingE(ln.heading, mutableListOf(), "sec-$headingN")
+        val h = HeadingE(ln.heading, mutableListOf(), "sec-$headingN", ln.page)
         addLine(h.content, ln)
         elements.add(h)
         val key = norm(NUMBER_PREFIX_RE.replace(ln.text.trim(), ""))
@@ -1412,7 +1465,7 @@ private class Assembler(val targets: Map<Int, String>, val registry: List<LinkIn
                     val p0 = if (prev != null && prev.heading == 0) prev else null
                     para = if (para == null && !startsReference(ln, p0, newBlock = prev == null)) lastParagraph() else null
                     if (para == null) {
-                        para = Paragraph(mutableListOf(), "reference")
+                        para = Paragraph(mutableListOf(), "reference", ln.page)
                         elements.add(para)
                     }
                 }
@@ -1432,7 +1485,7 @@ private class Assembler(val targets: Map<Int, String>, val registry: List<LinkIn
                     if (cand != null && cand.role == "body" && isContinuation(cand, block)) {
                         para = cand
                     } else {
-                        para = Paragraph(mutableListOf(), "body")
+                        para = Paragraph(mutableListOf(), "body", ln.page)
                         elements.add(para)
                     }
                 }
@@ -1507,8 +1560,11 @@ private fun fmt(f: Float): String {
 
 private fun toDocElements(elems: List<Elem>): List<DocElement> = elems.map { e ->
     when (e) {
-        is HeadingE -> Heading(e.level, inlinesHtml(e.content), e.id)
-        is Paragraph -> Block("<p${if (e.role != "body") " class=\"${e.role}\"" else ""}>${inlinesHtml(e.content)}</p>")
+        is HeadingE -> Heading(e.level, inlinesHtml(e.content), e.id, e.page)
+        is Paragraph -> Block(
+            "<p${if (e.role != "body") " class=\"${e.role}\"" else ""}${if (e.page >= 0) " data-pdf-page=\"${e.page}\"" else ""}>" +
+                "${inlinesHtml(e.content)}</p>",
+        )
         is VisualE -> {
             val cap = if (e.caption.isNotEmpty()) "<figcaption>${inlinesHtml(e.caption)}</figcaption>" else ""
             val style = if (e.widthEm > 0) " style=\"width: ${fmt(e.widthEm)}em\"" else ""
@@ -1537,10 +1593,11 @@ fun convertPdf(
         val n = doc.countPages()
         if (n == 0) throw IllegalArgumentException("This PDF has no pages")
         val registry = mutableListOf<LinkInfo>()
+        val metrics = HashMap<String, FloatArray>()
         val pages = (0 until n).map { i ->
             progress("Reading page ${i + 1} of $n")
             val page = doc.loadPage(i)
-            try { readPage(doc, page, i, registry) } finally { page.destroy() }
+            try { readPage(doc, page, i, registry, metrics) } finally { page.destroy() }
         }
         val stats = stats(pages)
         dropPageFurniture(pages)
